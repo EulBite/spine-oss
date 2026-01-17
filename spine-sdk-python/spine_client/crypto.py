@@ -1,0 +1,484 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2025 Eul Bite
+
+"""
+Cryptographic primitives for Spine SDK.
+
+Provides:
+- Canonical JSON serialization (deterministic, RFC 8785-like)
+- Hashing (BLAKE3 primary, SHA-256 for compatibility)
+- Ed25519 signing and verification
+- Key management (generation, serialization, BYOK)
+
+Security model:
+- Client signatures = "integrity claim" (proves client created the event)
+- Server receipts = "authoritative proof" (proves system of record accepted it)
+"""
+
+import hashlib
+import json
+import secrets
+from dataclasses import dataclass
+from typing import Optional, Union, Tuple
+from datetime import datetime, timezone
+
+# Ed25519 via cryptography library (widely available)
+try:
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import (
+        Ed25519PrivateKey,
+        Ed25519PublicKey,
+    )
+    from cryptography.hazmat.primitives import serialization
+    HAS_CRYPTOGRAPHY = True
+except ImportError:
+    HAS_CRYPTOGRAPHY = False
+
+# BLAKE3 (optional, faster)
+try:
+    import blake3
+    HAS_BLAKE3 = True
+except ImportError:
+    HAS_BLAKE3 = False
+
+
+# =============================================================================
+# Canonical JSON
+# =============================================================================
+
+def canonical_json(obj: Union[dict, list, str, int, float, bool, None]) -> bytes:
+    """
+    Serialize object to canonical JSON (deterministic byte representation).
+
+    Rules (RFC 8785-like):
+    - Keys sorted lexicographically (Unicode code points)
+    - No whitespace
+    - Numbers: no unnecessary leading zeros, no trailing zeros after decimal
+    - Strings: minimal escaping (only required chars)
+    - UTF-8 encoded output
+
+    Args:
+        obj: JSON-serializable object
+
+    Returns:
+        Canonical JSON as UTF-8 bytes
+
+    Example:
+        >>> canonical_json({"b": 1, "a": 2})
+        b'{"a":2,"b":1}'
+    """
+    return json.dumps(
+        obj,
+        sort_keys=True,
+        separators=(',', ':'),
+        ensure_ascii=False,
+        allow_nan=False,
+    ).encode('utf-8')
+
+
+# =============================================================================
+# Hashing
+# =============================================================================
+
+class HashAlgorithm:
+    """Supported hash algorithms."""
+    BLAKE3 = "blake3"
+    SHA256 = "sha256"
+
+
+def compute_hash(
+    data: bytes,
+    algorithm: str = HashAlgorithm.BLAKE3,
+) -> Tuple[str, str]:
+    """
+    Compute cryptographic hash of data.
+
+    Args:
+        data: Bytes to hash
+        algorithm: Hash algorithm (blake3 or sha256)
+
+    Returns:
+        Tuple of (hex_digest, algorithm_used)
+
+    Raises:
+        ValueError: If algorithm not supported or not available
+    """
+    if algorithm == HashAlgorithm.BLAKE3:
+        if not HAS_BLAKE3:
+            raise RuntimeError(
+                "BLAKE3 is required but not installed. "
+                "Install with: pip install blake3"
+            )
+        digest = blake3.blake3(data).hexdigest()
+        return (digest, HashAlgorithm.BLAKE3)
+
+    if algorithm == HashAlgorithm.SHA256:
+        digest = hashlib.sha256(data).hexdigest()
+        return (digest, HashAlgorithm.SHA256)
+
+    raise ValueError(f"Unsupported hash algorithm: {algorithm}")
+
+
+def hash_payload(payload: dict, algorithm: str = HashAlgorithm.BLAKE3) -> Tuple[str, str]:
+    """
+    Compute hash of a payload dict using canonical JSON.
+
+    Args:
+        payload: Dict to hash
+        algorithm: Hash algorithm
+
+    Returns:
+        Tuple of (hex_digest, algorithm_used)
+    """
+    canonical = canonical_json(payload)
+    return compute_hash(canonical, algorithm)
+
+
+# =============================================================================
+# Ed25519 Signing
+# =============================================================================
+
+@dataclass
+class SigningKey:
+    """Ed25519 signing key (private key)."""
+    key_id: str
+    _private_key: "Ed25519PrivateKey"
+    created_at: str
+
+    @classmethod
+    def generate(cls, key_id: Optional[str] = None) -> "SigningKey":
+        """
+        Generate a new Ed25519 signing key.
+
+        Args:
+            key_id: Optional key identifier. If not provided, generates one.
+
+        Returns:
+            New SigningKey instance
+        """
+        if not HAS_CRYPTOGRAPHY:
+            raise RuntimeError("cryptography library required for Ed25519 signing")
+
+        if key_id is None:
+            # Generate key_id: kid_<random>
+            key_id = f"kid_{secrets.token_hex(8)}"
+
+        private_key = Ed25519PrivateKey.generate()
+
+        return cls(
+            key_id=key_id,
+            _private_key=private_key,
+            created_at=datetime.now(timezone.utc).isoformat(),
+        )
+
+    @classmethod
+    def from_bytes(cls, private_bytes: bytes, key_id: str) -> "SigningKey":
+        """
+        Load signing key from raw bytes (32 bytes).
+
+        Args:
+            private_bytes: 32-byte Ed25519 seed
+            key_id: Key identifier
+
+        Returns:
+            SigningKey instance
+        """
+        if not HAS_CRYPTOGRAPHY:
+            raise RuntimeError("cryptography library required for Ed25519 signing")
+
+        private_key = Ed25519PrivateKey.from_private_bytes(private_bytes)
+
+        return cls(
+            key_id=key_id,
+            _private_key=private_key,
+            created_at=datetime.now(timezone.utc).isoformat(),
+        )
+
+    @classmethod
+    def from_pem(cls, pem_data: bytes, key_id: str) -> "SigningKey":
+        """
+        Load signing key from PEM format.
+
+        Args:
+            pem_data: PEM-encoded private key
+            key_id: Key identifier
+
+        Returns:
+            SigningKey instance
+        """
+        if not HAS_CRYPTOGRAPHY:
+            raise RuntimeError("cryptography library required for Ed25519 signing")
+
+        private_key = serialization.load_pem_private_key(pem_data, password=None)
+        if not isinstance(private_key, Ed25519PrivateKey):
+            raise ValueError("PEM does not contain an Ed25519 private key")
+
+        return cls(
+            key_id=key_id,
+            _private_key=private_key,
+            created_at=datetime.now(timezone.utc).isoformat(),
+        )
+
+    def sign(self, data: bytes) -> bytes:
+        """
+        Sign data with this key.
+
+        Args:
+            data: Bytes to sign
+
+        Returns:
+            64-byte Ed25519 signature
+        """
+        return self._private_key.sign(data)
+
+    def sign_hex(self, data: bytes) -> str:
+        """Sign data and return hex-encoded signature."""
+        return self.sign(data).hex()
+
+    def public_key(self) -> "VerifyingKey":
+        """Get the corresponding public key."""
+        return VerifyingKey(
+            key_id=self.key_id,
+            _public_key=self._private_key.public_key(),
+        )
+
+    def to_bytes(self) -> bytes:
+        """Export private key as raw bytes (32 bytes)."""
+        return self._private_key.private_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PrivateFormat.Raw,
+            encryption_algorithm=serialization.NoEncryption(),
+        )
+
+    def to_pem(self) -> bytes:
+        """Export private key as PEM."""
+        return self._private_key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption(),
+        )
+
+
+@dataclass
+class VerifyingKey:
+    """Ed25519 verifying key (public key)."""
+    key_id: str
+    _public_key: "Ed25519PublicKey"
+
+    @classmethod
+    def from_bytes(cls, public_bytes: bytes, key_id: str) -> "VerifyingKey":
+        """
+        Load verifying key from raw bytes (32 bytes).
+
+        Args:
+            public_bytes: 32-byte Ed25519 public key
+            key_id: Key identifier
+
+        Returns:
+            VerifyingKey instance
+        """
+        if not HAS_CRYPTOGRAPHY:
+            raise RuntimeError("cryptography library required for Ed25519 verification")
+
+        public_key = Ed25519PublicKey.from_public_bytes(public_bytes)
+
+        return cls(key_id=key_id, _public_key=public_key)
+
+    @classmethod
+    def from_hex(cls, hex_string: str, key_id: str) -> "VerifyingKey":
+        """Load verifying key from hex-encoded bytes."""
+        return cls.from_bytes(bytes.fromhex(hex_string), key_id)
+
+    @classmethod
+    def from_pem(cls, pem_data: bytes, key_id: str) -> "VerifyingKey":
+        """
+        Load verifying key from PEM format.
+
+        Args:
+            pem_data: PEM-encoded public key
+            key_id: Key identifier
+
+        Returns:
+            VerifyingKey instance
+        """
+        if not HAS_CRYPTOGRAPHY:
+            raise RuntimeError("cryptography library required for Ed25519 verification")
+
+        public_key = serialization.load_pem_public_key(pem_data)
+        if not isinstance(public_key, Ed25519PublicKey):
+            raise ValueError("PEM does not contain an Ed25519 public key")
+
+        return cls(key_id=key_id, _public_key=public_key)
+
+    def verify(self, signature: bytes, data: bytes) -> bool:
+        """
+        Verify a signature.
+
+        Args:
+            signature: 64-byte Ed25519 signature
+            data: Original signed data
+
+        Returns:
+            True if signature is valid, False otherwise
+        """
+        try:
+            self._public_key.verify(signature, data)
+            return True
+        except Exception:
+            return False
+
+    def verify_hex(self, signature_hex: str, data: bytes) -> bool:
+        """Verify a hex-encoded signature."""
+        return self.verify(bytes.fromhex(signature_hex), data)
+
+    def to_bytes(self) -> bytes:
+        """Export public key as raw bytes (32 bytes)."""
+        return self._public_key.public_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PublicFormat.Raw,
+        )
+
+    def to_hex(self) -> str:
+        """Export public key as hex string."""
+        return self.to_bytes().hex()
+
+    def to_pem(self) -> bytes:
+        """Export public key as PEM."""
+        return self._public_key.public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+
+
+# =============================================================================
+# Convenience functions
+# =============================================================================
+
+def sign_payload(payload: dict, signing_key: SigningKey) -> Tuple[str, str, str]:
+    """
+    Sign a payload dict.
+
+    Args:
+        payload: Dict to sign
+        signing_key: Key to sign with
+
+    Returns:
+        Tuple of (payload_hash, signature_hex, hash_algorithm)
+    """
+    canonical = canonical_json(payload)
+    payload_hash, hash_alg = compute_hash(canonical)
+    signature = signing_key.sign_hex(canonical)
+    return (payload_hash, signature, hash_alg)
+
+
+def verify_payload_signature(
+    payload: dict,
+    signature_hex: str,
+    verifying_key: VerifyingKey,
+) -> bool:
+    """
+    Verify a payload signature.
+
+    Args:
+        payload: Original payload dict
+        signature_hex: Hex-encoded signature
+        verifying_key: Key to verify with
+
+    Returns:
+        True if signature is valid
+    """
+    canonical = canonical_json(payload)
+    return verifying_key.verify_hex(signature_hex, canonical)
+
+
+# =============================================================================
+# Entry Hash (chain linking)
+# =============================================================================
+
+def compute_entry_hash(
+    seq: int,
+    timestamp_ns: int,
+    prev_hash: str,
+    payload_hash: str,
+    algorithm: str = HashAlgorithm.BLAKE3,
+) -> Tuple[str, str]:
+    """
+    Compute the entry hash for chain linking.
+
+    This hash binds all entry metadata together and is used for:
+    1. Chain linking (prev_hash of next entry)
+    2. Signature computation
+
+    The format is identical to spine-cli (Rust) for compatibility:
+    BLAKE3(seq_le_bytes || timestamp_ns_le_bytes || prev_hash_bytes || payload_hash_bytes)
+
+    IMPORTANT: Entry hash MUST use BLAKE3 for CLI compatibility.
+    Install blake3: pip install blake3
+
+    Args:
+        seq: Sequence number (u64)
+        timestamp_ns: Timestamp in nanoseconds (i64)
+        prev_hash: Previous entry hash (hex string)
+        payload_hash: Payload hash (hex string)
+        algorithm: Hash algorithm (must be blake3 for CLI compatibility)
+
+    Returns:
+        Tuple of (entry_hash_hex, algorithm_used)
+
+    Raises:
+        RuntimeError: If BLAKE3 is required but not installed
+    """
+    import struct
+
+    # Entry hash MUST use BLAKE3 for CLI compatibility
+    if algorithm == HashAlgorithm.BLAKE3 and not HAS_BLAKE3:
+        raise RuntimeError(
+            "BLAKE3 is required for entry hash computation (CLI compatibility). "
+            "Install it with: pip install blake3"
+        )
+
+    # Binary format MUST match spine-cli (Rust) exactly for cross-language verification:
+    # - Little-endian: matches Rust's to_le_bytes() on x86/ARM (most platforms)
+    # - UTF-8 for hashes: ensures consistent byte representation across languages
+    # - Field order: seq || ts || prev || payload (immutable contract)
+    seq_bytes = struct.pack('<Q', seq)   # u64 LE
+    ts_bytes = struct.pack('<q', timestamp_ns)   # i64 LE (signed for future-proofing)
+
+    data = seq_bytes + ts_bytes + prev_hash.encode('utf-8') + payload_hash.encode('utf-8')
+
+    return compute_hash(data, algorithm)
+
+
+def timestamp_to_nanos(iso_timestamp: str) -> int:
+    """
+    Convert ISO timestamp string to nanoseconds since epoch.
+
+    Uses integer arithmetic to avoid floating-point precision loss.
+    Python's datetime only has microsecond precision, so we multiply by 1000.
+
+    Args:
+        iso_timestamp: ISO 8601 timestamp (e.g., "2025-01-15T10:30:00.123456+00:00")
+
+    Returns:
+        Nanoseconds since Unix epoch (i64)
+    """
+    from datetime import datetime, timezone
+    import calendar
+
+    # Parse ISO timestamp
+    dt = datetime.fromisoformat(iso_timestamp)
+
+    # Ensure timezone aware (assume UTC if naive)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+
+    # Convert to UTC for consistent calculation
+    dt_utc = dt.astimezone(timezone.utc)
+
+    # Why calendar.timegm instead of dt.timestamp()?
+    # - timestamp() returns float, loses precision at ~15 significant digits
+    # - For ns since 1970: ~19 digits needed (1737000000000000000)
+    # - Float would give 1737000000000000000 vs 1737000000000000512 (wrong!)
+    # - Integer arithmetic preserves exact nanosecond values for CLI matching
+    seconds = calendar.timegm(dt_utc.timetuple())
+    microseconds = dt_utc.microsecond  # Python's max precision is microseconds
+    return seconds * 1_000_000_000 + microseconds * 1_000
