@@ -123,7 +123,7 @@ jobs:
               await wal.initialize()
               await wal.append({'event': 'test1', 'user': 'ci'})
               await wal.append({'event': 'test2', 'user': 'ci'})
-              await wal.close()
+              # WAL flushes on each append, no explicit close needed
               print('WAL created successfully')
 
           asyncio.run(main())
