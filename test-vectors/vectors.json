@@ -2,7 +2,7 @@
   "version": "1.0.0",
   "format_version": 1,
   "description": "Spine canonical test vectors for cross-implementation verification",
-  "generated": "2025-01-20",
+  "generated": "2026-01-20",
   "hash_algorithm": "blake3",
 
   "canonical_json_tests": [
