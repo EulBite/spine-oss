@@ -15,13 +15,11 @@ Use Case:
 """
 
 import asyncio
-import json
 import logging
 import random
 from datetime import datetime, timezone
+
 from spine_client.sidecar import ShadowModeSidecar
-from spine_client import AuditEvent
-from spine_client.events import Severity
 
 logging.basicConfig(
     level=logging.INFO,
@@ -36,14 +34,14 @@ def simulate_syslog_events(count: int = 100):
     priorities = ["info", "warning", "error"]
     facilities = ["auth", "daemon", "kernel", "user"]
 
-    for i in range(count):
+    for idx in range(count):
         yield {
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "priority": random.choice(priorities),
             "facility": random.choice(facilities),
             "host": f"server-{random.randint(1, 10):02d}",
             "program": random.choice(["sshd", "cron", "systemd", "nginx"]),
-            "message": f"Simulated syslog message {i}",
+            "message": f"Simulated syslog message {idx}",
             "pid": random.randint(1000, 65000),
         }
 
@@ -53,7 +51,7 @@ def simulate_windows_events(count: int = 100):
     event_ids = [4624, 4625, 4634, 4648, 4672, 4720, 4732]
     levels = ["Information", "Warning", "Error"]
 
-    for i in range(count):
+    for _ in range(count):
         yield {
             "TimeCreated": datetime.now(timezone.utc).isoformat(),
             "EventID": random.choice(event_ids),
@@ -74,7 +72,7 @@ def simulate_application_logs(count: int = 100):
     actions = ["login", "logout", "read", "write", "delete", "export"]
     resources = ["user", "document", "report", "config", "api"]
 
-    for i in range(count):
+    for _ in range(count):
         yield {
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "level": random.choice(["DEBUG", "INFO", "WARN", "ERROR"]),

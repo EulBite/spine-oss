@@ -23,7 +23,8 @@ To test:
 
 import asyncio
 import logging
-from spine_client import SpineClient, AuditEvent, CircuitBreaker
+
+from spine_client import AuditEvent, CircuitBreaker, SpineClient
 from spine_client.circuit_breaker import CircuitState
 
 logging.basicConfig(
@@ -139,9 +140,13 @@ async def client_with_circuit_breaker_demo():
                 ))
 
                 if response.payload_hash.startswith("pending:"):
-                    logger.info(f"{state_indicator} Event {i}: buffered locally (circuit: {state.value})")
+                    logger.info(
+                        f"{state_indicator} Event {i}: buffered locally (circuit: {state.value})"
+                    )
                 else:
-                    logger.info(f"{state_indicator} Event {i}: sent to Spine seq={response.sequence}")
+                    logger.info(
+                        f"{state_indicator} Event {i}: sent to Spine seq={response.sequence}"
+                    )
 
             except Exception as e:
                 logger.error(f"❌ Event {i} failed: {e}")

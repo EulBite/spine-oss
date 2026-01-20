@@ -13,8 +13,8 @@ from pathlib import Path
 
 from spine_client import (
     WAL,
-    WALConfig,
     SigningKey,
+    WALConfig,
     verify_wal,
 )
 
@@ -83,7 +83,7 @@ async def main():
     print("\n[6] Receipt status (server sync)...")
     unsynced_count = await wal.unsynced_count()
     print(f"    Records without receipt: {unsynced_count}")
-    print(f"    These are 'client integrity claims' until synced to Spine")
+    print("    These are 'client integrity claims' until synced to Spine")
 
     print("\n" + "=" * 60)
     print("Test complete!")

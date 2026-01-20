@@ -19,7 +19,8 @@ import asyncio
 import logging
 import random
 import time
-from spine_client import AuditSidecar, AuditEvent, Actor, Resource
+
+from spine_client import Actor, AuditEvent, AuditSidecar, Resource
 from spine_client.events import Severity
 
 logging.basicConfig(
@@ -102,7 +103,7 @@ async def simulate_scada_operations(sidecar: AuditSidecar, duration_secs: int = 
 
         # Emit event - this should NEVER block the control loop
         emit_start = time.monotonic()
-        accepted = await sidecar.emit(event)
+        await sidecar.emit(event)
         emit_time = (time.monotonic() - emit_start) * 1000
 
         if emit_time > 10:  # Log if > 10ms
@@ -153,7 +154,7 @@ async def main():
         monitor_task = asyncio.create_task(monitor_sidecar(sidecar))
 
         try:
-            event_count = await simulate_scada_operations(sidecar, duration_secs=30)
+            await simulate_scada_operations(sidecar, duration_secs=30)
         finally:
             monitor_task.cancel()
 

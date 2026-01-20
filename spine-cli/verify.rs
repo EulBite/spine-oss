@@ -454,7 +454,7 @@ fn print_result(result: &VerificationResult) {
     println!("║  Signatures verified: {}", result.signatures_verified);
 
     if let (Some(first), Some(last)) = (result.first_sequence, result.last_sequence) {
-        println!("║  Sequence range: {} - {}", first, last);
+        println!("║  Sequence range: {first} - {last}");
     }
 
     // Guard against empty chain_root (defensive, shouldn't happen with events)
@@ -543,6 +543,7 @@ mod tests {
             payload_hash.to_string()
         };
         let entry = WalEntry {
+            format_version: 1,
             sequence,
             timestamp_ns,
             prev_hash: prev_hash.to_string(),

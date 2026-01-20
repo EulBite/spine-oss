@@ -16,9 +16,9 @@ import json
 import sys
 from pathlib import Path
 
-from .wal import WAL, WALConfig
 from .crypto import SigningKey
 from .verify import verify_wal
+from .wal import WAL, WALConfig
 
 
 def create_parser() -> argparse.ArgumentParser:
@@ -116,7 +116,7 @@ async def cmd_demo(args: argparse.Namespace) -> int:
     ]
 
     print(f"Logging {args.events} events...")
-    for i, event in enumerate(demo_events[: args.events]):
+    for event in demo_events[: args.events]:
         record = await wal.append(event)
         print(f"  [{record.seq}] {event['event_type']}")
 

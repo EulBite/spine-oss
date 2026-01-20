@@ -42,55 +42,55 @@ Usage (with Spine server):
 """
 
 # Core types
-from .types import (
-    LocalRecord,
-    Receipt,
-    VerifyResult,
-    VerifyStatus,
-    Severity,
-    Actor,
-    Resource,
-    generate_event_id,
-    generate_stream_id,
-    WAL_FORMAT_VERSION,
-)
-
-# Crypto
-from .crypto import (
-    SigningKey,
-    VerifyingKey,
-    canonical_json,
-    hash_payload,
-    compute_hash,
-    compute_entry_hash,
-    timestamp_to_nanos,
-    sign_payload,
-    verify_payload_signature,
-    HashAlgorithm,
-)
-
-# WAL (standalone mode)
-from .wal import WAL, WALConfig
-
-# Verification
-from .verify import (
-    verify_record,
-    verify_chain,
-    verify_wal,
-    verify_record_hash,
-    verify_record_signature,
-    verify_receipt,
-)
+from .circuit_breaker import CircuitBreaker, CircuitState
 
 # Client (for Spine server integration)
 from .client import SpineClient
+
+# Crypto
+from .crypto import (
+    HashAlgorithm,
+    SigningKey,
+    VerifyingKey,
+    canonical_json,
+    compute_entry_hash,
+    compute_hash,
+    hash_payload,
+    sign_payload,
+    timestamp_to_nanos,
+    verify_payload_signature,
+)
 from .events import AuditEvent
-from .circuit_breaker import CircuitBreaker, CircuitState
-from .sidecar import AuditSidecar
 
 # Legacy (deprecated, use WAL instead)
 # LocalWAL emits DeprecationWarning in __init__
 from .local_wal import LocalWAL
+from .sidecar import AuditSidecar
+from .types import (
+    WAL_FORMAT_VERSION,
+    Actor,
+    LocalRecord,
+    Receipt,
+    Resource,
+    Severity,
+    VerifyResult,
+    VerifyStatus,
+    generate_event_id,
+    generate_stream_id,
+)
+
+# Verification
+from .verify import (
+    verify_chain,
+    verify_receipt,
+    verify_record,
+    verify_record_hash,
+    verify_record_signature,
+    verify_wal,
+)
+
+# WAL (standalone mode)
+from .wal import WAL, WALConfig
 
 __version__ = "0.3.0"
 __all__ = [

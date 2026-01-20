@@ -24,11 +24,12 @@ Usage:
 """
 
 import asyncio
-import time
-from dataclasses import dataclass, field
-from enum import Enum
-from typing import Optional, Callable, Any
 import logging
+import time
+from collections.abc import Callable
+from dataclasses import dataclass
+from enum import Enum
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -86,7 +87,7 @@ class CircuitBreaker:
         half_open_max_calls: int = 1,
         success_threshold: int = 2,
         call_timeout: float = 5.0,
-        on_state_change: Optional[Callable[[CircuitState, CircuitState], None]] = None,
+        on_state_change: Callable[[CircuitState, CircuitState], None] | None = None,
     ):
         self.config = CircuitBreakerConfig(
             failure_threshold=failure_threshold,
@@ -99,7 +100,7 @@ class CircuitBreaker:
         self._state = CircuitState.CLOSED
         self._failure_count = 0
         self._success_count = 0
-        self._last_failure_time: Optional[float] = None
+        self._last_failure_time: float | None = None
         self._half_open_calls = 0
         self._lock = asyncio.Lock()
         self._on_state_change = on_state_change
@@ -225,7 +226,7 @@ class CircuitBreaker:
         except asyncio.TimeoutError:
             await self._record_failure()
             raise
-        except Exception as e:
+        except Exception:
             await self._record_failure()
             raise
 

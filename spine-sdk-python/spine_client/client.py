@@ -8,15 +8,14 @@ Spine Client - Main API client with circuit breaker and fallback support.
 import asyncio
 import logging
 from dataclasses import dataclass
-from typing import Optional, Dict, Any, List
 from urllib.parse import urljoin
 
 import aiohttp
 
-from .events import AuditEvent
 from .circuit_breaker import CircuitBreaker, CircuitBreakerError, CircuitState
-from .wal import WAL, WALConfig
 from .crypto import SigningKey
+from .events import AuditEvent
+from .wal import WAL, WALConfig
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +38,7 @@ class ClientConfig:
     max_retries: int = 3
 
     # Authentication settings
-    api_key: Optional[str] = None  # API key for Bearer token auth
+    api_key: str | None = None  # API key for Bearer token auth
     api_key_header: str = "Authorization"  # Header name for API key
 
     # Circuit breaker settings
@@ -50,7 +49,7 @@ class ClientConfig:
     # WAL fallback settings (cryptographically signed, CLI-verifiable)
     enable_wal_fallback: bool = True
     wal_dir: str = "./spine_fallback_wal"
-    signing_key: Optional[SigningKey] = None  # Auto-generated if not provided
+    signing_key: SigningKey | None = None  # Auto-generated if not provided
 
     # Batching settings
     batch_size: int = 100
@@ -94,7 +93,7 @@ class SpineClient:
         enable_circuit_breaker: bool = True,
         enable_wal_fallback: bool = True,
         wal_dir: str = "./spine_fallback_wal",
-        signing_key: Optional[SigningKey] = None,
+        signing_key: SigningKey | None = None,
         **kwargs
     ):
         self.config = ClientConfig(
@@ -106,11 +105,11 @@ class SpineClient:
             **{k: v for k, v in kwargs.items() if hasattr(ClientConfig, k)}
         )
 
-        self._session: Optional[aiohttp.ClientSession] = None
-        self._circuit_breaker: Optional[CircuitBreaker] = None
-        self._wal: Optional[WAL] = None
-        self._signing_key: Optional[SigningKey] = signing_key
-        self._background_tasks: List[asyncio.Task] = []
+        self._session: aiohttp.ClientSession | None = None
+        self._circuit_breaker: CircuitBreaker | None = None
+        self._wal: WAL | None = None
+        self._signing_key: SigningKey | None = signing_key
+        self._background_tasks: list[asyncio.Task] = []
 
         # Circuit breaker pattern: fail fast after N consecutive errors.
         # Why this matters for audit logging:
@@ -209,8 +208,8 @@ class SpineClient:
         self,
         method: str,
         path: str,
-        json_data: Optional[dict] = None,
-        extra_headers: Optional[dict] = None,
+        json_data: dict | None = None,
+        extra_headers: dict | None = None,
     ) -> dict:
         """Send HTTP request to Spine."""
         session = await self._get_session()
@@ -324,7 +323,7 @@ class SpineClient:
         except Exception as e:
             logger.error(f"Async log failed: {e}")
 
-    async def log_batch(self, events: List[AuditEvent]) -> List[SpineResponse]:
+    async def log_batch(self, events: list[AuditEvent]) -> list[SpineResponse]:
         """
         Log multiple events in a batch.
 
@@ -393,7 +392,7 @@ class SpineClient:
         except Exception:
             return False
 
-    async def get_circuit_state(self) -> Optional[CircuitState]:
+    async def get_circuit_state(self) -> CircuitState | None:
         """Get current circuit breaker state."""
         if self._circuit_breaker:
             return self._circuit_breaker.state

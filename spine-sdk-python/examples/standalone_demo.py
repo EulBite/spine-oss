@@ -15,7 +15,8 @@ Then verify with CLI:
 import asyncio
 import json
 from pathlib import Path
-from spine_client import WAL, WALConfig, SigningKey, verify_wal
+
+from spine_client import WAL, SigningKey, WALConfig, verify_wal
 
 
 async def main():

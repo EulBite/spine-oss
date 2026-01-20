@@ -77,7 +77,7 @@ pub fn run(
     file.write_all(json.as_bytes())?;
 
     eprintln!("Report generated: {}", output_path.display());
-    eprintln!("  Template: {:?}", template);
+    eprintln!("  Template: {template:?}");
     eprintln!(
         "  Events verified: {}",
         report.verification_summary.events_verified
@@ -391,17 +391,17 @@ fn format_timestamp(ns: i64) -> String {
         if let Some(dt) = chrono::DateTime::from_timestamp(secs, nsecs) {
             return dt.to_rfc3339();
         }
-        return format!("OVERFLOW:{}", ns);
+        return format!("OVERFLOW:{ns}");
     }
 
     if ns < MIN_SAFE_NANOS {
         // Far past timestamp - use seconds-based conversion
         let secs = ns / 1_000_000_000;
-        let nsecs = ((ns % 1_000_000_000).abs()) as u32;
+        let nsecs = (ns % 1_000_000_000).unsigned_abs() as u32;
         if let Some(dt) = chrono::DateTime::from_timestamp(secs, nsecs) {
             return dt.to_rfc3339();
         }
-        return format!("UNDERFLOW:{}", ns);
+        return format!("UNDERFLOW:{ns}");
     }
 
     chrono::DateTime::from_timestamp_nanos(ns).to_rfc3339()

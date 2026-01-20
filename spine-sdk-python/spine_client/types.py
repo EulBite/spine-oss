@@ -15,12 +15,11 @@ Security levels:
 - With receipt: "Audit-grade Proof" (server-attested, time-bound, verifiable)
 """
 
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Optional, Dict, Any, List
 from enum import Enum
-import uuid
-import time
+from typing import Any
 
 
 class Severity(str, Enum):
@@ -50,23 +49,23 @@ class VerifyStatus(str, Enum):
 @dataclass
 class Actor:
     """Entity performing the action."""
-    id: Optional[str] = None
-    email: Optional[str] = None
-    role: Optional[str] = None
-    ip_address: Optional[str] = None
+    id: str | None = None
+    email: str | None = None
+    role: str | None = None
+    ip_address: str | None = None
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {k: v for k, v in self.__dict__.items() if v is not None}
 
 
 @dataclass
 class Resource:
     """Resource being accessed or modified."""
-    type: Optional[str] = None
-    id: Optional[str] = None
-    name: Optional[str] = None
+    type: str | None = None
+    id: str | None = None
+    name: str | None = None
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {k: v for k, v in self.__dict__.items() if v is not None}
 
 
@@ -98,9 +97,9 @@ class Receipt:
     receipt_sig: str
     server_key_id: str
     sig_alg: str = "ed25519"
-    batch_id: Optional[str] = None
+    batch_id: str | None = None
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         result = {
             "event_id": self.event_id,
             "payload_hash": self.payload_hash,
@@ -115,7 +114,7 @@ class Receipt:
         return result
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "Receipt":
+    def from_dict(cls, data: dict[str, Any]) -> "Receipt":
         return cls(
             event_id=data["event_id"],
             payload_hash=data["payload_hash"],
@@ -183,16 +182,16 @@ class LocalRecord:
     seq: int
     prev_hash: str
     ts_client: str
-    payload: Dict[str, Any]
+    payload: dict[str, Any]
     payload_hash: str
     hash_alg: str
     sig_client: str
     key_id: str
     format_version: int = WAL_FORMAT_VERSION
-    public_key: Optional[str] = None  # Full public key hex for CLI compatibility
-    receipt: Optional[Receipt] = None
+    public_key: str | None = None  # Full public key hex for CLI compatibility
+    receipt: Receipt | None = None
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Serialize for WAL storage."""
         result = {
             "format_version": self.format_version,
@@ -214,7 +213,7 @@ class LocalRecord:
         return result
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "LocalRecord":
+    def from_dict(cls, data: dict[str, Any]) -> "LocalRecord":
         receipt = None
         if "receipt" in data and data["receipt"]:
             receipt = Receipt.from_dict(data["receipt"])
@@ -270,10 +269,10 @@ class VerifyResult:
     message: str
     is_authoritative: bool = False
     checked_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
-    details: Dict[str, Any] = field(default_factory=dict)
+    details: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
-    def success(cls, is_authoritative: bool = False, details: Optional[Dict] = None) -> "VerifyResult":
+    def success(cls, is_authoritative: bool = False, details: dict | None = None) -> "VerifyResult":
         """Create a successful verification result."""
         if is_authoritative:
             msg = "Audit-grade proof: server receipt verified"
@@ -289,7 +288,9 @@ class VerifyResult:
         )
 
     @classmethod
-    def failure(cls, status: VerifyStatus, message: str, details: Optional[Dict] = None) -> "VerifyResult":
+    def failure(
+        cls, status: VerifyStatus, message: str, details: dict | None = None
+    ) -> "VerifyResult":
         """Create a failed verification result."""
         return cls(
             valid=False,
@@ -322,7 +323,7 @@ def generate_event_id() -> str:
     return f"evt_{event_uuid}"
 
 
-def generate_stream_id(key_id: str, namespace: Optional[str] = None) -> str:
+def generate_stream_id(key_id: str, namespace: str | None = None) -> str:
     """
     Generate a stream ID from key_id and optional namespace.
 

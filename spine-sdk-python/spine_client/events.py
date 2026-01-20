@@ -5,11 +5,11 @@
 Event types for Spine audit logging.
 """
 
-from dataclasses import dataclass, field, asdict
-from datetime import datetime, timezone
-from typing import Optional, Dict, Any
-from enum import Enum
 import uuid
+from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
+from enum import Enum
+from typing import Any
 
 
 class Severity(str, Enum):
@@ -32,12 +32,12 @@ class Actor:
         role: Role or permission level
         ip_address: Source IP address
     """
-    id: Optional[str] = None
-    email: Optional[str] = None
-    role: Optional[str] = None
-    ip_address: Optional[str] = None
+    id: str | None = None
+    email: str | None = None
+    role: str | None = None
+    ip_address: str | None = None
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {k: v for k, v in asdict(self).items() if v is not None}
 
 
@@ -51,11 +51,11 @@ class Resource:
         id: Resource identifier
         name: Human-readable name
     """
-    type: Optional[str] = None
-    id: Optional[str] = None
-    name: Optional[str] = None
+    type: str | None = None
+    id: str | None = None
+    name: str | None = None
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {k: v for k, v in asdict(self).items() if v is not None}
 
 
@@ -88,13 +88,13 @@ class AuditEvent:
         )
     """
     event_type: str
-    payload: Dict[str, Any] = field(default_factory=dict)
-    actor: Optional[Actor] = None
-    resource: Optional[Resource] = None
+    payload: dict[str, Any] = field(default_factory=dict)
+    actor: Actor | None = None
+    resource: Resource | None = None
     severity: Severity = Severity.INFO
-    source: Optional[str] = None
-    timestamp: Optional[str] = None
-    idempotency_key: Optional[str] = None
+    source: str | None = None
+    timestamp: str | None = None
+    idempotency_key: str | None = None
 
     def __post_init__(self):
         if self.timestamp is None:
@@ -102,7 +102,7 @@ class AuditEvent:
         if self.idempotency_key is None:
             self.idempotency_key = str(uuid.uuid4())
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Convert to API request format.
 
         Validates that payload is JSON-serializable before returning.

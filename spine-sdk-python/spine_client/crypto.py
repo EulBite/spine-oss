@@ -20,16 +20,15 @@ import json
 import secrets
 import unicodedata
 from dataclasses import dataclass
-from typing import Optional, Union, Tuple
 from datetime import datetime, timezone
 
 # Ed25519 via cryptography library (widely available)
 try:
+    from cryptography.hazmat.primitives import serialization
     from cryptography.hazmat.primitives.asymmetric.ed25519 import (
         Ed25519PrivateKey,
         Ed25519PublicKey,
     )
-    from cryptography.hazmat.primitives import serialization
     HAS_CRYPTOGRAPHY = True
 except ImportError:
     HAS_CRYPTOGRAPHY = False
@@ -46,7 +45,10 @@ except ImportError:
 # Canonical JSON
 # =============================================================================
 
-def _normalize_unicode(obj: Union[dict, list, str, int, float, bool, None]) -> Union[dict, list, str, int, float, bool, None]:
+JsonValue = dict | list | str | int | float | bool | None
+
+
+def _normalize_unicode(obj: JsonValue) -> JsonValue:
     """
     Recursively apply Unicode NFC normalization to all strings.
 
@@ -74,7 +76,7 @@ def _normalize_unicode(obj: Union[dict, list, str, int, float, bool, None]) -> U
         return obj
 
 
-def canonical_json(obj: Union[dict, list, str, int, float, bool, None]) -> bytes:
+def canonical_json(obj: dict | list | str | int | float | bool | None) -> bytes:
     """
     Serialize object to canonical JSON (deterministic byte representation).
 
@@ -123,7 +125,7 @@ class HashAlgorithm:
 def compute_hash(
     data: bytes,
     algorithm: str = HashAlgorithm.BLAKE3,
-) -> Tuple[str, str]:
+) -> tuple[str, str]:
     """
     Compute cryptographic hash of data.
 
@@ -153,7 +155,7 @@ def compute_hash(
     raise ValueError(f"Unsupported hash algorithm: {algorithm}")
 
 
-def hash_payload(payload: dict, algorithm: str = HashAlgorithm.BLAKE3) -> Tuple[str, str]:
+def hash_payload(payload: dict, algorithm: str = HashAlgorithm.BLAKE3) -> tuple[str, str]:
     """
     Compute hash of a payload dict using canonical JSON.
 
@@ -180,7 +182,7 @@ class SigningKey:
     created_at: str
 
     @classmethod
-    def generate(cls, key_id: Optional[str] = None) -> "SigningKey":
+    def generate(cls, key_id: str | None = None) -> "SigningKey":
         """
         Generate a new Ed25519 signing key.
 
@@ -388,7 +390,7 @@ class VerifyingKey:
 # Convenience functions
 # =============================================================================
 
-def sign_payload(payload: dict, signing_key: SigningKey) -> Tuple[str, str, str]:
+def sign_payload(payload: dict, signing_key: SigningKey) -> tuple[str, str, str]:
     """
     Sign a payload dict.
 
@@ -435,7 +437,7 @@ def compute_entry_hash(
     prev_hash: str,
     payload_hash: str,
     algorithm: str = HashAlgorithm.BLAKE3,
-) -> Tuple[str, str]:
+) -> tuple[str, str]:
     """
     Compute the entry hash for chain linking.
 
@@ -496,8 +498,8 @@ def timestamp_to_nanos(iso_timestamp: str) -> int:
     Returns:
         Nanoseconds since Unix epoch (i64)
     """
-    from datetime import datetime, timezone
     import calendar
+    from datetime import datetime, timezone
 
     # Parse ISO timestamp
     dt = datetime.fromisoformat(iso_timestamp)

@@ -1,5 +1,7 @@
 import asyncio
-from spine_client import SpineClient, AuditEvent
+
+from spine_client import AuditEvent, SpineClient
+
 
 async def main():
     async with SpineClient('http://localhost:3000', local_wal_dir='./test_wal') as client:

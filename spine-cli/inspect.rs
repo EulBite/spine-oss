@@ -64,7 +64,7 @@ pub fn run(
         if let Some(event) = find_event(wal_path, seq)? {
             println!("{}", serde_json::to_string_pretty(&event)?);
         } else {
-            eprintln!("Event with sequence {} not found", seq);
+            eprintln!("Event with sequence {seq} not found");
             return Ok(false);
         }
     } else {
@@ -306,17 +306,17 @@ fn format_timestamp(ns: i64) -> String {
         if let Some(dt) = chrono::DateTime::from_timestamp(secs, nsecs) {
             return dt.to_rfc3339();
         }
-        return format!("OVERFLOW:{}", ns);
+        return format!("OVERFLOW:{ns}");
     }
 
     if ns < MIN_SAFE_NANOS {
         // Far past timestamp - use seconds-based conversion
         let secs = ns / 1_000_000_000;
-        let nsecs = ((ns % 1_000_000_000).abs()) as u32;
+        let nsecs = (ns % 1_000_000_000).unsigned_abs() as u32;
         if let Some(dt) = chrono::DateTime::from_timestamp(secs, nsecs) {
             return dt.to_rfc3339();
         }
-        return format!("UNDERFLOW:{}", ns);
+        return format!("UNDERFLOW:{ns}");
     }
 
     chrono::DateTime::from_timestamp_nanos(ns).to_rfc3339()
@@ -339,7 +339,7 @@ fn truncate_str(s: &str, max_len: usize) -> String {
     if char_count > max_len {
         // Take max_len - 1 chars and add ellipsis
         let truncated: String = s.chars().take(max_len - 1).collect();
-        format!("{}…", truncated)
+        format!("{truncated}…")
     } else {
         s.to_string()
     }

@@ -15,7 +15,8 @@ Demonstrates:
 
 import asyncio
 import logging
-from spine_client import SpineClient, AuditEvent, Actor, Resource
+
+from spine_client import Actor, AuditEvent, Resource, SpineClient
 from spine_client.events import Severity
 
 # Configure logging
@@ -79,7 +80,8 @@ async def main():
             },
             source="reporting-service",
         ))
-        logger.info(f"Event logged: sequence={response.sequence}, hash={response.payload_hash[:16]}...")
+        hash_preview = response.payload_hash[:16]
+        logger.info(f"Event logged: sequence={response.sequence}, hash={hash_preview}...")
 
         # Example 3: Critical security event
         logger.info("=== Example 3: Critical Event ===")

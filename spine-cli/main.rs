@@ -7,7 +7,7 @@
 //! Designed for auditors and compliance officers who need independent verification.
 
 use clap::{Parser, Subcommand};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 mod export;
@@ -221,8 +221,8 @@ fn main() -> ExitCode {
 }
 
 fn generate_report(
-    wal: &PathBuf,
-    output: &PathBuf,
+    wal: &Path,
+    output: &Path,
     template: ReportTemplate,
 ) -> Result<bool, Box<dyn std::error::Error>> {
     report::run(wal, output, template)

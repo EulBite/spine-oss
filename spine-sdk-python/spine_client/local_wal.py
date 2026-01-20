@@ -29,11 +29,13 @@ This module is kept for backward compatibility only. It may be removed in v1.0.
 
 import asyncio
 import json
+import logging
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional, List, AsyncIterator, Callable, Any, Dict
-import logging
+from typing import Any
+
 import aiofiles
 
 logger = logging.getLogger(__name__)
@@ -44,8 +46,8 @@ class SyncState:
     """Sync state for a WAL entry, stored in separate sync log."""
     synced: bool = False
     sync_attempts: int = 0
-    last_sync_error: Optional[str] = None
-    updated_at: Optional[str] = None
+    last_sync_error: str | None = None
+    updated_at: str | None = None
 
 
 @dataclass
@@ -57,7 +59,7 @@ class WALEntry:
     # Sync state is now tracked separately but merged on read
     synced: bool = False
     sync_attempts: int = 0
-    last_sync_error: Optional[str] = None
+    last_sync_error: str | None = None
 
     def to_json(self) -> str:
         """Serialize for WAL storage (excludes sync state for immutability)."""
@@ -115,7 +117,7 @@ class LocalWAL:
         data_dir: str = "/var/spine/fallback",
         max_file_size: int = 10 * 1024 * 1024,  # 10MB
         max_files: int = 100,
-        sync_callback: Optional[Callable[[dict], Any]] = None,
+        sync_callback: Callable[[dict], Any] | None = None,
     ):
         import warnings
         warnings.warn(
@@ -131,13 +133,13 @@ class LocalWAL:
         self.sync_callback = sync_callback
 
         self._sequence = 0
-        self._current_file: Optional[Path] = None
+        self._current_file: Path | None = None
         self._lock = asyncio.Lock()
         self._sync_lock = asyncio.Lock()  # Single-flight sync protection
         self._initialized = False
         # In-memory cache of sync states (rebuilt from sync log on init)
         # Call compact_sync_state() periodically to reduce memory usage
-        self._sync_states: Dict[int, SyncState] = {}
+        self._sync_states: dict[int, SyncState] = {}
 
     @property
     def _sync_state_file(self) -> Path:
@@ -159,7 +161,7 @@ class LocalWAL:
 
         for wal_file in wal_files:
             try:
-                async with aiofiles.open(wal_file, "r") as f:
+                async with aiofiles.open(wal_file) as f:
                     async for line in f:
                         if line.strip():
                             try:
@@ -190,7 +192,7 @@ class LocalWAL:
             return
 
         try:
-            async with aiofiles.open(self._sync_state_file, "r") as f:
+            async with aiofiles.open(self._sync_state_file) as f:
                 async for line in f:
                     if line.strip():
                         try:
@@ -232,7 +234,7 @@ class LocalWAL:
         for wal_file in files_to_check:
             has_unsynced = False
             try:
-                async with aiofiles.open(wal_file, "r") as f:
+                async with aiofiles.open(wal_file) as f:
                     async for line in f:
                         if line.strip():
                             try:
@@ -324,7 +326,7 @@ class LocalWAL:
         for entry in entries:
             yield entry
 
-    async def _collect_unsynced_entries(self, limit: int = 0) -> List["WALEntry"]:
+    async def _collect_unsynced_entries(self, limit: int = 0) -> list["WALEntry"]:
         """
         Internal: Collect unsynced entries while holding the lock.
 
@@ -339,7 +341,7 @@ class LocalWAL:
         """
         await self.initialize()
 
-        entries: List[WALEntry] = []
+        entries: list[WALEntry] = []
 
         # Use lock to prevent concurrent modification during collection
         async with self._lock:
@@ -350,7 +352,7 @@ class LocalWAL:
                     break
 
                 try:
-                    async with aiofiles.open(wal_file, "r") as f:
+                    async with aiofiles.open(wal_file) as f:
                         async for line in f:
                             if line.strip():
                                 try:
@@ -378,9 +380,9 @@ class LocalWAL:
     async def update_entry(
         self,
         sequence: int,
-        synced: Optional[bool] = None,
-        sync_attempts: Optional[int] = None,
-        last_sync_error: Optional[str] = None,
+        synced: bool | None = None,
+        sync_attempts: int | None = None,
+        last_sync_error: str | None = None,
     ) -> bool:
         """
         Update an entry's sync state in the append-only sync log.
@@ -453,7 +455,7 @@ class LocalWAL:
         for wal_file in wal_files:
             total_size += wal_file.stat().st_size
             try:
-                async with aiofiles.open(wal_file, "r") as f:
+                async with aiofiles.open(wal_file) as f:
                     async for line in f:
                         if line.strip():
                             try:
@@ -518,15 +520,15 @@ class LocalWAL:
 
             # Count original entries (async)
             original_count = 0
-            async with aiofiles.open(self._sync_state_file, "r") as f:
+            async with aiofiles.open(self._sync_state_file) as f:
                 async for line in f:
                     if line.strip():
                         original_count += 1
 
             # Read all states (last entry per sequence wins)
-            states: Dict[int, dict] = {}
+            states: dict[int, dict] = {}
             try:
-                async with aiofiles.open(self._sync_state_file, "r") as f:
+                async with aiofiles.open(self._sync_state_file) as f:
                     async for line in f:
                         if line.strip():
                             try:
@@ -541,14 +543,14 @@ class LocalWAL:
 
             # Find min/max sequence range in WAL files (memory-efficient)
             # Only need to check first entry of first file and last entry of last file
-            min_seq: Optional[int] = None
-            max_seq: Optional[int] = None
+            min_seq: int | None = None
+            max_seq: int | None = None
             wal_files = sorted(self.data_dir.glob("wal_*.jsonl"))
 
             if wal_files:
                 # Get min from first file's first entry
                 try:
-                    async with aiofiles.open(wal_files[0], "r") as f:
+                    async with aiofiles.open(wal_files[0]) as f:
                         async for line in f:
                             if line.strip():
                                 try:
@@ -563,7 +565,7 @@ class LocalWAL:
                 # Get max from last file's last entry
                 try:
                     last_seq = None
-                    async with aiofiles.open(wal_files[-1], "r") as f:
+                    async with aiofiles.open(wal_files[-1]) as f:
                         async for line in f:
                             if line.strip():
                                 try:

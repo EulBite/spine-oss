@@ -25,24 +25,27 @@ Usage:
     result = verify_record(record, client_public_key, server_public_key)
 """
 
-import logging
-from typing import Optional, List, Dict, Any
+from __future__ import annotations
 
+import logging
+from typing import TYPE_CHECKING
+
+from .crypto import (
+    HashAlgorithm,
+    VerifyingKey,
+    canonical_json,
+    compute_entry_hash,
+    compute_hash,
+    timestamp_to_nanos,
+)
 from .types import (
     LocalRecord,
-    Receipt,
     VerifyResult,
     VerifyStatus,
 )
-from .crypto import (
-    canonical_json,
-    compute_hash,
-    compute_entry_hash,
-    timestamp_to_nanos,
-    verify_payload_signature,
-    VerifyingKey,
-    HashAlgorithm,
-)
+
+if TYPE_CHECKING:
+    from .wal import WAL
 
 logger = logging.getLogger(__name__)
 
@@ -62,13 +65,16 @@ def verify_record_hash(record: LocalRecord) -> VerifyResult:
     """
     # Recompute hash
     canonical = canonical_json(record.payload)
-    alg = record.hash_alg if record.hash_alg in (HashAlgorithm.BLAKE3, HashAlgorithm.SHA256) else HashAlgorithm.SHA256
+    supported_algs = (HashAlgorithm.BLAKE3, HashAlgorithm.SHA256)
+    alg = record.hash_alg if record.hash_alg in supported_algs else HashAlgorithm.SHA256
     computed_hash, _ = compute_hash(canonical, alg)
 
     if computed_hash != record.payload_hash:
+        computed_preview = computed_hash[:16]
+        stored_preview = record.payload_hash[:16]
         return VerifyResult.failure(
             VerifyStatus.INVALID_HASH,
-            f"Hash mismatch: computed {computed_hash[:16]}... != stored {record.payload_hash[:16]}...",
+            f"Hash mismatch: computed {computed_preview}... != stored {stored_preview}...",
             details={
                 "event_id": record.event_id,
                 "computed": computed_hash,
@@ -152,7 +158,8 @@ def verify_receipt(
     if receipt.server_key_id != server_key.key_id:
         return VerifyResult.failure(
             VerifyStatus.INVALID_RECEIPT,
-            f"Server key ID mismatch: receipt has {receipt.server_key_id}, verifying with {server_key.key_id}",
+            f"Server key ID mismatch: receipt has {receipt.server_key_id}, "
+            f"verifying with {server_key.key_id}",
             details={"event_id": record.event_id}
         )
 
@@ -189,7 +196,7 @@ def verify_receipt(
 def verify_record(
     record: LocalRecord,
     client_key: VerifyingKey,
-    server_key: Optional[VerifyingKey] = None,
+    server_key: VerifyingKey | None = None,
 ) -> VerifyResult:
     """
     Full verification of a single record.
@@ -239,9 +246,9 @@ def verify_record(
 
 
 def verify_chain(
-    records: List[LocalRecord],
+    records: list[LocalRecord],
     client_key: VerifyingKey,
-    server_key: Optional[VerifyingKey] = None,
+    server_key: VerifyingKey | None = None,
 ) -> VerifyResult:
     """
     Verify a chain of records.
@@ -291,13 +298,13 @@ def verify_chain(
                 errors.append({
                     "event_id": record.event_id,
                     "seq": record.seq,
-                    "error": f"First record has invalid prev_hash (expected genesis)",
+                    "error": "First record has invalid prev_hash (expected genesis)",
                 })
         elif record.prev_hash != prev_entry_hash:
             errors.append({
                 "event_id": record.event_id,
                 "seq": record.seq,
-                "error": f"Chain break: prev_hash doesn't match previous entry hash",
+                "error": "Chain break: prev_hash doesn't match previous entry hash",
                 "expected": prev_entry_hash[:16] + "...",
                 "got": record.prev_hash[:16] + "...",
             })
@@ -341,8 +348,8 @@ def verify_chain(
 
 
 async def verify_wal(
-    wal: "WAL",  # type: ignore
-    server_key: Optional[VerifyingKey] = None,
+    wal: WAL,
+    server_key: VerifyingKey | None = None,
 ) -> VerifyResult:
     """
     Verify all records in a WAL.
@@ -354,7 +361,6 @@ async def verify_wal(
     Returns:
         VerifyResult for entire WAL
     """
-    from .wal import WAL
 
     client_key = wal.signing_key.public_key()
     records = []

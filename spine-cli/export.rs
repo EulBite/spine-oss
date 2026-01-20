@@ -107,8 +107,7 @@ pub fn run(
     // Warn if --include-proofs is used with non-JSONL format (proofs are only included in JSONL)
     if include_proofs && !matches!(format, ExportFormat::Jsonl) {
         eprintln!(
-            "Warning: --include-proofs has no effect with {:?} format (only JSONL supports chain proofs)",
-            format
+            "Warning: --include-proofs has no effect with {format:?} format (only JSONL supports chain proofs)"
         );
     }
 
@@ -309,17 +308,17 @@ fn format_timestamp(ns: i64) -> String {
         if let Some(dt) = DateTime::from_timestamp(secs, nsecs) {
             return dt.to_rfc3339();
         }
-        return format!("OVERFLOW:{}", ns);
+        return format!("OVERFLOW:{ns}");
     }
 
     if ns < MIN_SAFE_NANOS {
         // Far past timestamp - use seconds-based conversion
         let secs = ns / 1_000_000_000;
-        let nsecs = ((ns % 1_000_000_000).abs()) as u32;
+        let nsecs = (ns % 1_000_000_000).unsigned_abs() as u32;
         if let Some(dt) = DateTime::from_timestamp(secs, nsecs) {
             return dt.to_rfc3339();
         }
-        return format!("UNDERFLOW:{}", ns);
+        return format!("UNDERFLOW:{ns}");
     }
 
     DateTime::from_timestamp_nanos(ns).to_rfc3339()
@@ -447,6 +446,7 @@ mod tests {
         use crate::wal_types::compute_entry_hash;
 
         let entry = WalEntry {
+            format_version: 1,
             sequence: 1,
             timestamp_ns: 1000000,
             prev_hash: "0".repeat(64),
@@ -481,9 +481,9 @@ mod tests {
 
         let zero_hash = "0".repeat(64);
         // Event at 2025-01-01 00:00:00 (timestamp in ns)
-        let ts1 = 1735689600_000_000_000i64;
+        let ts1 = 1_735_689_600_000_000_000_i64;
         // Event at 2025-01-03 00:00:00
-        let ts2 = 1735862400_000_000_000i64;
+        let ts2 = 1_735_862_400_000_000_000_i64;
 
         writeln!(file, "{}", create_test_entry(1, ts1, &zero_hash, "p1")).unwrap();
         writeln!(file, "{}", create_test_entry(2, ts2, "h1", "p2")).unwrap();
@@ -509,7 +509,7 @@ mod tests {
         // This ensures no panics on overflow/underflow
 
         // Valid normal timestamp (2025-01-01)
-        let ts_normal = 1735689600_000_000_000i64;
+        let ts_normal = 1_735_689_600_000_000_000_i64;
         let result = super::format_timestamp(ts_normal);
         assert!(
             result.contains("2025"),

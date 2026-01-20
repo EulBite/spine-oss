@@ -52,13 +52,12 @@ where
                     chrono::NaiveDateTime::parse_from_str(&s, "%Y-%m-%dT%H:%M:%S%.f")
                         .map(|dt| dt.and_utc().fixed_offset())
                 })
-                .map_err(|e| D::Error::custom(format!("Invalid timestamp format: {}", e)))?;
+                .map_err(|e| D::Error::custom(format!("Invalid timestamp format: {e}")))?;
 
             // Fail explicitly if timestamp is outside nanosecond range
             dt.timestamp_nanos_opt().ok_or_else(|| {
                 D::Error::custom(format!(
-                    "Timestamp out of range for nanoseconds: {} (valid range: ~1677-2262 AD)",
-                    s
+                    "Timestamp out of range for nanoseconds: {s} (valid range: ~1677-2262 AD)"
                 ))
             })
         }
@@ -120,14 +119,12 @@ pub fn validate_entry_hashes(entry: &WalEntry) -> Vec<String> {
         HexValidation::Valid => {}
         HexValidation::InvalidLength { expected, actual } => {
             errors.push(format!(
-                "prev_hash invalid length: expected {} chars, got {}",
-                expected, actual
+                "prev_hash invalid length: expected {expected} chars, got {actual}"
             ));
         }
         HexValidation::InvalidChars { position, char } => {
             errors.push(format!(
-                "prev_hash contains invalid char '{}' at position {}",
-                char, position
+                "prev_hash contains invalid char '{char}' at position {position}"
             ));
         }
     }
@@ -136,14 +133,12 @@ pub fn validate_entry_hashes(entry: &WalEntry) -> Vec<String> {
         HexValidation::Valid => {}
         HexValidation::InvalidLength { expected, actual } => {
             errors.push(format!(
-                "payload_hash invalid length: expected {} chars, got {}",
-                expected, actual
+                "payload_hash invalid length: expected {expected} chars, got {actual}"
             ));
         }
         HexValidation::InvalidChars { position, char } => {
             errors.push(format!(
-                "payload_hash contains invalid char '{}' at position {}",
-                char, position
+                "payload_hash contains invalid char '{char}' at position {position}"
             ));
         }
     }
@@ -495,6 +490,7 @@ mod tests {
 
     fn make_entry(seq: u64, ts: i64, prev: &str, payload: &str) -> WalEntry {
         WalEntry {
+            format_version: 1,
             sequence: seq,
             timestamp_ns: ts,
             prev_hash: prev.to_string(),

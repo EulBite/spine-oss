@@ -26,21 +26,22 @@ Important:
 import asyncio
 import json
 import logging
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Optional, List, AsyncIterator, Callable, Any, Dict, Set
+from typing import Any
+
 import aiofiles
 
-from .types import LocalRecord, Receipt, generate_event_id, generate_stream_id
 from .crypto import (
-    canonical_json,
-    hash_payload,
-    compute_entry_hash,
-    timestamp_to_nanos,
-    SigningKey,
     HashAlgorithm,
+    SigningKey,
+    compute_entry_hash,
+    hash_payload,
+    timestamp_to_nanos,
 )
+from .types import LocalRecord, Receipt, generate_event_id, generate_stream_id
 
 logger = logging.getLogger(__name__)
 
@@ -89,8 +90,8 @@ class WAL:
     def __init__(
         self,
         signing_key: SigningKey,
-        config: Optional[WALConfig] = None,
-        namespace: Optional[str] = None,
+        config: WALConfig | None = None,
+        namespace: str | None = None,
     ):
         self.signing_key = signing_key
         self.config = config or WALConfig()
@@ -111,7 +112,7 @@ class WAL:
         # Breaking this invariant = broken chain = verification failure
         self._seq = 0
         self._prev_hash = GENESIS_HASH
-        self._current_segment: Optional[Path] = None
+        self._current_segment: Path | None = None
 
     @property
     def _receipt_file(self) -> Path:
@@ -148,7 +149,7 @@ class WAL:
         # Try to load saved state
         if self._state_file.exists():
             try:
-                async with aiofiles.open(self._state_file, "r") as f:
+                async with aiofiles.open(self._state_file) as f:
                     state = json.loads(await f.read())
                     if state.get("stream_id") == self.stream_id:
                         self._seq = state.get("seq", 0)
@@ -169,7 +170,7 @@ class WAL:
         segments = sorted(self.data_dir.glob("segment_*.jsonl"))
         for segment in segments:
             try:
-                async with aiofiles.open(segment, "r") as f:
+                async with aiofiles.open(segment) as f:
                     async for line in f:
                         if line.strip():
                             try:
@@ -220,7 +221,7 @@ class WAL:
         self._current_segment = self.data_dir / f"segment_{timestamp}.jsonl"
         return self._current_segment
 
-    async def append(self, payload: Dict[str, Any]) -> LocalRecord:
+    async def append(self, payload: dict[str, Any]) -> LocalRecord:
         """
         Append an event to the WAL.
 
@@ -250,7 +251,8 @@ class WAL:
             # This is what we sign and what becomes prev_hash for the next record.
             # Why sign entry_hash instead of payload?
             # - Payload-only signatures allow replay attacks (same payload, different position)
-            # - Entry hash proves: "this exact payload, at this sequence, at this time, after that previous record"
+            # - Entry hash proves: "this exact payload, at this sequence, at this time,
+            #   after that previous record"
             # MUST use BLAKE3 to match spine-cli verification (cross-language compatibility)
             entry_hash, _ = compute_entry_hash(
                 seq=seq,
@@ -324,7 +326,7 @@ class WAL:
                 logger.error(f"Failed to attach receipt for {event_id}: {e}")
                 return False
 
-    async def get_record(self, event_id: str) -> Optional[LocalRecord]:
+    async def get_record(self, event_id: str) -> LocalRecord | None:
         """
         Get a record by event ID.
 
@@ -342,7 +344,7 @@ class WAL:
         segments = sorted(self.data_dir.glob("segment_*.jsonl"))
         for segment in segments:
             try:
-                async with aiofiles.open(segment, "r") as f:
+                async with aiofiles.open(segment) as f:
                     async for line in f:
                         if line.strip():
                             try:
@@ -358,7 +360,7 @@ class WAL:
 
         return None
 
-    async def _load_receipts(self, event_ids: Optional[Set[str]] = None) -> Dict[str, Receipt]:
+    async def _load_receipts(self, event_ids: set[str] | None = None) -> dict[str, Receipt]:
         """
         Load receipts from the receipt log.
 
@@ -377,7 +379,7 @@ class WAL:
             return receipts
 
         try:
-            async with aiofiles.open(self._receipt_file, "r") as f:
+            async with aiofiles.open(self._receipt_file) as f:
                 async for line in f:
                     if line.strip():
                         try:
@@ -395,19 +397,19 @@ class WAL:
 
         return receipts
 
-    async def _load_synced_event_ids(self) -> Set[str]:
+    async def _load_synced_event_ids(self) -> set[str]:
         """
         Load only event IDs that have receipts (memory-efficient).
 
         Returns:
             Set of event IDs with receipts
         """
-        synced_ids: Set[str] = set()
+        synced_ids: set[str] = set()
         if not self._receipt_file.exists():
             return synced_ids
 
         try:
-            async with aiofiles.open(self._receipt_file, "r") as f:
+            async with aiofiles.open(self._receipt_file) as f:
                 async for line in f:
                     if line.strip():
                         try:
@@ -420,7 +422,7 @@ class WAL:
 
         return synced_ids
 
-    async def unsynced_records(self, limit: int) -> List[LocalRecord]:
+    async def unsynced_records(self, limit: int) -> list[LocalRecord]:
         """
         Get a batch of records without server receipts.
 
@@ -454,7 +456,7 @@ class WAL:
                 break
 
             try:
-                async with aiofiles.open(segment, "r") as f:
+                async with aiofiles.open(segment) as f:
                     async for line in f:
                         if line.strip():
                             try:
@@ -489,7 +491,7 @@ class WAL:
         segments = sorted(self.data_dir.glob("segment_*.jsonl"))
         for segment in segments:
             try:
-                async with aiofiles.open(segment, "r") as f:
+                async with aiofiles.open(segment) as f:
                     async for line in f:
                         if line.strip():
                             try:
@@ -506,7 +508,7 @@ class WAL:
 
     async def iter_records(
         self,
-        stream_id: Optional[str] = None,
+        stream_id: str | None = None,
     ) -> AsyncIterator[LocalRecord]:
         """
         Iterate over all records in the WAL.
@@ -525,7 +527,7 @@ class WAL:
         segments = sorted(self.data_dir.glob("segment_*.jsonl"))
         for segment in segments:
             try:
-                async with aiofiles.open(segment, "r") as f:
+                async with aiofiles.open(segment) as f:
                     async for line in f:
                         if line.strip():
                             try:
@@ -539,7 +541,7 @@ class WAL:
             except Exception:
                 continue
 
-    async def _apply_retention(self) -> Dict[str, int]:
+    async def _apply_retention(self) -> dict[str, int]:
         """
         Apply retention policy - remove old segments.
 
@@ -572,7 +574,7 @@ class WAL:
 
         return {"removed": removed, "kept": kept + 1}  # +1 for current/last
 
-    async def get_stats(self) -> Dict[str, Any]:
+    async def get_stats(self) -> dict[str, Any]:
         """Get WAL statistics."""
         await self.initialize()
 

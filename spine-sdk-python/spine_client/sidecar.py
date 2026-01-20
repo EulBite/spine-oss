@@ -31,13 +31,13 @@ Usage:
 import asyncio
 import logging
 import time
-from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from typing import Optional, Callable, Any
 from collections import deque
+from collections.abc import Callable
+from dataclasses import dataclass
+from datetime import datetime, timezone
 
-from .events import AuditEvent
 from .client import SpineClient
+from .events import AuditEvent
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +56,8 @@ class SidecarConfig:
 
     # Timeouts
     emit_timeout_ms: int = 50  # Max time to wait when emitting
-    block_timeout_ms: int = 5000  # Max time to wait for buffer slot when policy is "block" (0 = infinite)
+    # Max time to wait for buffer slot when policy is "block" (0 = infinite)
+    block_timeout_ms: int = 5000
 
 
 @dataclass
@@ -67,8 +68,8 @@ class SidecarMetrics:
     events_dropped: int = 0
     events_failed: int = 0
     buffer_high_watermark: int = 0
-    last_send_time: Optional[float] = None
-    last_error: Optional[str] = None
+    last_send_time: float | None = None
+    last_error: str | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -119,7 +120,7 @@ class AuditSidecar:
         batch_size: int = 100,
         send_interval_ms: int = 100,
         emit_timeout_ms: int = 50,
-        on_drop: Optional[Callable[[AuditEvent, str], None]] = None,
+        on_drop: Callable[[AuditEvent, str], None] | None = None,
     ):
         self.config = SidecarConfig(
             buffer_size=buffer_size,
@@ -130,18 +131,21 @@ class AuditSidecar:
         )
 
         self._spine_url = spine_url
-        self._client: Optional[SpineClient] = None
-        self._buffer: deque = deque(maxlen=buffer_size if overflow_policy == "drop_oldest" else None)
+        self._client: SpineClient | None = None
+        maxlen = buffer_size if overflow_policy == "drop_oldest" else None
+        self._buffer: deque = deque(maxlen=maxlen)
         self._metrics = SidecarMetrics()
         self._running = False
-        self._sender_task: Optional[asyncio.Task] = None
+        self._sender_task: asyncio.Task | None = None
         self._on_drop = on_drop
 
         # Lock to protect buffer operations from race conditions
         self._buffer_lock = asyncio.Lock()
 
         # Semaphore for bounded buffer when policy is "block"
-        self._buffer_semaphore = asyncio.Semaphore(buffer_size) if overflow_policy == "block" else None
+        self._buffer_semaphore = (
+            asyncio.Semaphore(buffer_size) if overflow_policy == "block" else None
+        )
 
     async def start(self) -> None:
         """Start the sidecar background sender."""
@@ -261,7 +265,8 @@ class AuditSidecar:
                     return False
 
             # drop_oldest is handled by deque maxlen, but we track the drop
-            if self.config.overflow_policy == "drop_oldest" and len(self._buffer) >= self.config.buffer_size:
+            is_drop_oldest = self.config.overflow_policy == "drop_oldest"
+            if is_drop_oldest and len(self._buffer) >= self.config.buffer_size:
                 dropped = self._buffer.popleft()
                 self._metrics.events_dropped += 1
                 if self._on_drop:
