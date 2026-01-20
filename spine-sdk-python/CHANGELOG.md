@@ -57,7 +57,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Memory usage: `_load_receipts()` now supports filtering by event IDs
 - `get_stats()` now uses `unsynced_count()` instead of truncated list
 
-## [0.1.0] - 2025-01-01
+## [0.1.0] - 2026-01-01
 
 ### Added
 
