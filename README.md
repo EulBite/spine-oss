@@ -1,5 +1,10 @@
 # Spine Open Source
 
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+[![Python 3.10+](https://img.shields.io/badge/Python-3.10+-3776ab.svg)](https://www.python.org/downloads/)
+[![Rust 1.75+](https://img.shields.io/badge/Rust-1.75+-dea584.svg)](https://www.rust-lang.org/)
+[![WAL Format](https://img.shields.io/badge/WAL_Format-v1-green.svg)](./docs/WAL_FORMAT.md)
+
 **Open-source SDK and CLI for verifiable audit logging in compliance-critical systems.**
 
 Build tamper-evident audit trails with Ed25519 signatures and BLAKE3 hash chains.
@@ -17,6 +22,27 @@ These tools allow you to:
 |-----------|----------|---------|
 | [spine-sdk-python](./spine-sdk-python/) | Python | Create signed audit logs (WAL files) |
 | [spine-cli](./spine-cli/) | Rust | Verify WAL integrity independently |
+
+## Installation
+
+### Python SDK
+
+```bash
+# From PyPI (when published)
+pip install spine-client
+
+# From source (development)
+cd spine-sdk-python
+pip install -e .
+```
+
+### Rust CLI
+
+```bash
+cd spine-cli
+cargo build --release
+# Binary at ./target/release/spine-cli
+```
 
 ## Quick Start
 
@@ -116,7 +142,8 @@ Spine uses append-only JSON Lines files with hash chaining:
 ```
 
 Each entry links to the previous via `prev_hash`, forming a verifiable chain.
-See [spine-cli/README.md](./spine-cli/README.md#wal-format) for full specification.
+
+See [WAL Format Specification](./docs/WAL_FORMAT.md) for complete documentation, or [Test Vectors](./test-vectors/) for cross-implementation verification.
 
 ## Requirements
 
@@ -131,8 +158,13 @@ See [spine-cli/README.md](./spine-cli/README.md#wal-format) for full specificati
 
 ## Documentation
 
-- [CLI Documentation](./spine-cli/README.md) - Verification commands, output formats, error types
-- [Python SDK Documentation](./spine-sdk-python/README.md) - Client API, circuit breaker, sidecar mode
+- [WAL Format Specification](./docs/WAL_FORMAT.md) - Complete format specification
+- [Key Management Guide](./docs/KEY_MANAGEMENT.md) - Key generation, rotation, revocation
+- [Test Vectors](./test-vectors/README.md) - Cross-implementation verification
+- [CLI Documentation](./spine-cli/README.md) - Verification commands and output formats
+- [Python SDK Documentation](./spine-sdk-python/README.md) - Client API and configuration
+
+See [examples/audit_report.py](./examples/audit_report.py) for a compliance-ready verification workflow.
 
 ## License
 

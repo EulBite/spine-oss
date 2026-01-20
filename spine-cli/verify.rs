@@ -28,7 +28,9 @@ use std::path::Path;
 use thiserror::Error;
 
 // Shared types - single source of truth for hash computation
-use crate::wal_types::{collect_wal_segments, compute_entry_hash, validate_entry_hashes, WalEntry, GENESIS_PREV_HASH};
+use crate::wal_types::{
+    collect_wal_segments, compute_entry_hash, validate_entry_hashes, WalEntry, GENESIS_PREV_HASH,
+};
 
 #[derive(Error, Debug)]
 pub enum VerifyError {
@@ -415,9 +417,10 @@ fn verify_signature(entry: &WalEntry, sig_hex: &str, pk_hex: &str) -> Result<boo
         sequence: entry.sequence,
     })?;
 
-    let signature = Signature::from_slice(&sig_bytes).map_err(|_| VerifyError::InvalidSignature {
-        sequence: entry.sequence,
-    })?;
+    let signature =
+        Signature::from_slice(&sig_bytes).map_err(|_| VerifyError::InvalidSignature {
+            sequence: entry.sequence,
+        })?;
 
     let pk_array: [u8; 32] = pk_bytes
         .try_into()
@@ -432,9 +435,7 @@ fn verify_signature(entry: &WalEntry, sig_hex: &str, pk_hex: &str) -> Result<boo
 
     // Message is the entry hash - this MUST match what the signer signs
     let message = compute_entry_hash(entry);
-    Ok(verifying_key
-        .verify(message.as_bytes(), &signature)
-        .is_ok())
+    Ok(verifying_key.verify(message.as_bytes(), &signature).is_ok())
 }
 
 fn print_result(result: &VerificationResult) {
@@ -442,7 +443,11 @@ fn print_result(result: &VerificationResult) {
     println!("║              SPINE WAL VERIFICATION REPORT                   ║");
     println!("╠══════════════════════════════════════════════════════════════╣");
 
-    let status = if result.valid { "✓ VALID" } else { "✗ INVALID" };
+    let status = if result.valid {
+        "✓ VALID"
+    } else {
+        "✗ INVALID"
+    };
     let status_color = if result.valid { "\x1b[32m" } else { "\x1b[31m" };
     println!("║  Status: {status_color}{status}\x1b[0m");
     println!("║  Events verified: {}", result.events_verified);
@@ -491,10 +496,21 @@ mod tests {
 
     /// Create a valid test entry with proper 64-char hex payload hash.
     /// If payload_hash is shorter than 64 chars, it's padded to form a valid hash.
-    fn create_entry(sequence: u64, timestamp_ns: i64, prev_hash: &str, payload_hash: &str) -> String {
+    fn create_entry(
+        sequence: u64,
+        timestamp_ns: i64,
+        prev_hash: &str,
+        payload_hash: &str,
+    ) -> String {
         // Ensure payload_hash is a valid 64-char hex string for testing
         let valid_payload = if payload_hash.len() < 64 {
-            format!("{:0<64}", payload_hash.chars().filter(|c| c.is_ascii_hexdigit()).collect::<String>())
+            format!(
+                "{:0<64}",
+                payload_hash
+                    .chars()
+                    .filter(|c| c.is_ascii_hexdigit())
+                    .collect::<String>()
+            )
         } else {
             payload_hash.to_string()
         };
@@ -508,10 +524,21 @@ mod tests {
     }
 
     /// Helper to compute hash for test data - uses shared implementation
-    fn compute_test_entry_hash(sequence: u64, timestamp_ns: i64, prev_hash: &str, payload_hash: &str) -> String {
+    fn compute_test_entry_hash(
+        sequence: u64,
+        timestamp_ns: i64,
+        prev_hash: &str,
+        payload_hash: &str,
+    ) -> String {
         // Use same padding logic as create_entry for consistency
         let valid_payload = if payload_hash.len() < 64 {
-            format!("{:0<64}", payload_hash.chars().filter(|c| c.is_ascii_hexdigit()).collect::<String>())
+            format!(
+                "{:0<64}",
+                payload_hash
+                    .chars()
+                    .filter(|c| c.is_ascii_hexdigit())
+                    .collect::<String>()
+            )
         } else {
             payload_hash.to_string()
         };
@@ -541,7 +568,10 @@ mod tests {
 
         assert!(result.valid);
         assert_eq!(result.events_verified, 0);
-        assert!(result.warnings.iter().any(|w| w.contains("No WAL segments")));
+        assert!(result
+            .warnings
+            .iter()
+            .any(|w| w.contains("No WAL segments")));
     }
 
     #[test]
@@ -571,7 +601,10 @@ mod tests {
 
         let result = verify_wal(dir.path(), None, false).unwrap();
         assert!(!result.valid);
-        assert!(result.errors.iter().any(|e| e.error_type == "invalid_genesis"));
+        assert!(result
+            .errors
+            .iter()
+            .any(|e| e.error_type == "invalid_genesis"));
     }
 
     #[test]
@@ -673,7 +706,10 @@ mod tests {
         // Provide wrong expected root
         let result = verify_wal(dir.path(), Some("wrong_root_hash"), false).unwrap();
         assert!(!result.valid);
-        assert!(result.errors.iter().any(|e| e.error_type == "root_mismatch"));
+        assert!(result
+            .errors
+            .iter()
+            .any(|e| e.error_type == "root_mismatch"));
     }
 
     #[test]
@@ -692,7 +728,7 @@ mod tests {
 
         let result = verify_wal(dir.path(), None, true);
         assert!(result.is_err());
-        
+
         // Should be InvalidGenesis, not later errors
         let err = result.unwrap_err();
         assert!(err.to_string().contains("genesis"));
@@ -733,10 +769,15 @@ mod tests {
         assert!(!result.valid);
 
         // Should detect invalid genesis due to wrong sequence
-        let has_genesis_error = result.errors.iter().any(|e| {
-            e.error_type == "invalid_genesis" && e.details.contains("sequence")
-        });
-        assert!(has_genesis_error, "Expected invalid_genesis error about sequence, got: {:?}", result.errors);
+        let has_genesis_error = result
+            .errors
+            .iter()
+            .any(|e| e.error_type == "invalid_genesis" && e.details.contains("sequence"));
+        assert!(
+            has_genesis_error,
+            "Expected invalid_genesis error about sequence, got: {:?}",
+            result.errors
+        );
     }
 
     #[test]
@@ -753,9 +794,16 @@ mod tests {
         assert!(!result.valid);
 
         // Should have two genesis errors: one for sequence, one for prev_hash
-        let genesis_errors: Vec<_> = result.errors.iter()
+        let genesis_errors: Vec<_> = result
+            .errors
+            .iter()
             .filter(|e| e.error_type == "invalid_genesis")
             .collect();
-        assert_eq!(genesis_errors.len(), 2, "Expected 2 invalid_genesis errors, got: {:?}", genesis_errors);
+        assert_eq!(
+            genesis_errors.len(),
+            2,
+            "Expected 2 invalid_genesis errors, got: {:?}",
+            genesis_errors
+        );
     }
 }

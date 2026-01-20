@@ -10,10 +10,10 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-mod verify;
 mod export;
 mod inspect;
 mod report;
+mod verify;
 mod wal_types;
 
 /// Spine CLI - Cryptographic Audit Trail Tools

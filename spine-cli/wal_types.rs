@@ -55,11 +55,12 @@ where
                 .map_err(|e| D::Error::custom(format!("Invalid timestamp format: {}", e)))?;
 
             // Fail explicitly if timestamp is outside nanosecond range
-            dt.timestamp_nanos_opt()
-                .ok_or_else(|| D::Error::custom(format!(
+            dt.timestamp_nanos_opt().ok_or_else(|| {
+                D::Error::custom(format!(
                     "Timestamp out of range for nanoseconds: {} (valid range: ~1677-2262 AD)",
                     s
-                )))
+                ))
+            })
         }
     }
 }
@@ -97,7 +98,10 @@ pub fn validate_hex_hash(hash: &str) -> HexValidation {
 
     for (pos, ch) in hash.chars().enumerate() {
         if !ch.is_ascii_hexdigit() {
-            return HexValidation::InvalidChars { position: pos, char: ch };
+            return HexValidation::InvalidChars {
+                position: pos,
+                char: ch,
+            };
         }
     }
 
@@ -145,7 +149,8 @@ pub fn validate_entry_hashes(entry: &WalEntry) -> Vec<String> {
     }
 
     if let Some(ref sig) = entry.signature {
-        if sig.len() != 128 {  // Ed25519 signature = 64 bytes
+        if sig.len() != 128 {
+            // Ed25519 signature = 64 bytes
             errors.push(format!(
                 "signature invalid length: expected 128 chars, got {}",
                 sig.len()
@@ -156,7 +161,8 @@ pub fn validate_entry_hashes(entry: &WalEntry) -> Vec<String> {
     }
 
     if let Some(ref pk) = entry.public_key {
-        if pk.len() != 64 {  // Ed25519 public key = 32 bytes
+        if pk.len() != 64 {
+            // Ed25519 public key = 32 bytes
             errors.push(format!(
                 "public_key invalid length: expected 64 chars, got {}",
                 pk.len()
@@ -205,7 +211,12 @@ pub struct WalEntry {
     pub sequence: u64,
 
     /// Unix timestamp in nanoseconds (or ISO string for SDK format)
-    #[serde(alias = "ts_ns", alias = "ts", alias = "timestamp", alias = "ts_client")]
+    #[serde(
+        alias = "ts_ns",
+        alias = "ts",
+        alias = "timestamp",
+        alias = "ts_client"
+    )]
     #[serde(deserialize_with = "deserialize_timestamp")]
     pub timestamp_ns: i64,
 
@@ -239,7 +250,6 @@ pub struct WalEntry {
     pub key_id: Option<String>,
 
     // --- SDK LocalRecord fields ---
-
     /// Unique event identifier (SDK format: evt_<uuid>)
     #[serde(default)]
     pub event_id: Option<String>,
@@ -312,7 +322,9 @@ fn default_format_version() -> u32 {
 /// - `00000001.wal`, `00000002.wal` (zero-padded numeric)
 /// - `wal_20250101_120000.jsonl` (timestamp-based)
 /// - `segment_001.wal` (prefixed numeric)
-pub fn collect_wal_segments(wal_path: &std::path::Path) -> std::io::Result<Vec<std::path::PathBuf>> {
+pub fn collect_wal_segments(
+    wal_path: &std::path::Path,
+) -> std::io::Result<Vec<std::path::PathBuf>> {
     let entries = std::fs::read_dir(wal_path)?;
     let mut segments = Vec::new();
 
@@ -548,7 +560,7 @@ mod tests {
 
         let result = verify_chain_link(&bad_genesis, None);
         assert!(matches!(result, HashVerification::InvalidGenesis { .. }));
-        
+
         // Verify the reason mentions prev_hash
         if let HashVerification::InvalidGenesis { reason } = result {
             assert!(reason.contains("prev_hash"));
@@ -663,23 +675,43 @@ mod tests {
     fn test_validate_hex_hash_invalid_length() {
         assert!(matches!(
             validate_hex_hash("abc123"),
-            HexValidation::InvalidLength { expected: 64, actual: 6 }
+            HexValidation::InvalidLength {
+                expected: 64,
+                actual: 6
+            }
         ));
         assert!(matches!(
             validate_hex_hash(""),
-            HexValidation::InvalidLength { expected: 64, actual: 0 }
+            HexValidation::InvalidLength {
+                expected: 64,
+                actual: 0
+            }
         ));
     }
 
     #[test]
     fn test_validate_hex_hash_invalid_chars() {
         // 'g' is not a hex digit
-        let result = validate_hex_hash("ghijklmnopqrstuvwxyz0123456789abcdef0123456789abcdef0123456789ab");
-        assert!(matches!(result, HexValidation::InvalidChars { position: 0, char: 'g' }));
+        let result =
+            validate_hex_hash("ghijklmnopqrstuvwxyz0123456789abcdef0123456789abcdef0123456789ab");
+        assert!(matches!(
+            result,
+            HexValidation::InvalidChars {
+                position: 0,
+                char: 'g'
+            }
+        ));
 
         // Invalid char in the middle (X is at position 43)
-        let result = validate_hex_hash("abcdef0123456789abcdef0123456789abcdef01234X6789abcdef0123456789");
-        assert!(matches!(result, HexValidation::InvalidChars { position: 43, char: 'X' }));
+        let result =
+            validate_hex_hash("abcdef0123456789abcdef0123456789abcdef01234X6789abcdef0123456789");
+        assert!(matches!(
+            result,
+            HexValidation::InvalidChars {
+                position: 43,
+                char: 'X'
+            }
+        ));
     }
 
     #[test]

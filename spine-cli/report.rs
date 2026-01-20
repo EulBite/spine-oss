@@ -78,7 +78,10 @@ pub fn run(
 
     eprintln!("Report generated: {}", output_path.display());
     eprintln!("  Template: {:?}", template);
-    eprintln!("  Events verified: {}", report.verification_summary.events_verified);
+    eprintln!(
+        "  Events verified: {}",
+        report.verification_summary.events_verified
+    );
     eprintln!("  Status: {}", report.verification_summary.overall_status);
 
     Ok(report.verification_summary.overall_status == "PASS")
@@ -232,7 +235,12 @@ fn generate_checklist(template: ReportTemplate, analysis: &WalAnalysis) -> Vec<C
     let mut checks = vec![
         ComplianceCheck {
             requirement: "Chain Integrity".to_string(),
-            status: if analysis.chain_intact { "PASS" } else { "FAIL" }.to_string(),
+            status: if analysis.chain_intact {
+                "PASS"
+            } else {
+                "FAIL"
+            }
+            .to_string(),
             details: if analysis.chain_intact {
                 "All events are cryptographically linked".to_string()
             } else {
@@ -241,7 +249,12 @@ fn generate_checklist(template: ReportTemplate, analysis: &WalAnalysis) -> Vec<C
         },
         ComplianceCheck {
             requirement: "Sequence Continuity".to_string(),
-            status: if analysis.sequence_gaps.is_empty() { "PASS" } else { "FAIL" }.to_string(),
+            status: if analysis.sequence_gaps.is_empty() {
+                "PASS"
+            } else {
+                "FAIL"
+            }
+            .to_string(),
             details: if analysis.sequence_gaps.is_empty() {
                 "No sequence gaps detected".to_string()
             } else {
@@ -250,11 +263,19 @@ fn generate_checklist(template: ReportTemplate, analysis: &WalAnalysis) -> Vec<C
         },
         ComplianceCheck {
             requirement: "Timestamp Monotonicity".to_string(),
-            status: if analysis.timestamp_regressions.is_empty() { "PASS" } else { "WARN" }.to_string(),
+            status: if analysis.timestamp_regressions.is_empty() {
+                "PASS"
+            } else {
+                "WARN"
+            }
+            .to_string(),
             details: if analysis.timestamp_regressions.is_empty() {
                 "All timestamps are monotonically increasing".to_string()
             } else {
-                format!("Regressions at sequences: {:?}", analysis.timestamp_regressions)
+                format!(
+                    "Regressions at sequences: {:?}",
+                    analysis.timestamp_regressions
+                )
             },
         },
     ];
@@ -264,33 +285,58 @@ fn generate_checklist(template: ReportTemplate, analysis: &WalAnalysis) -> Vec<C
         ReportTemplate::Dora => {
             checks.push(ComplianceCheck {
                 requirement: "DORA Art. 12 - ICT Logging".to_string(),
-                status: if analysis.total_events > 0 { "PASS" } else { "FAIL" }.to_string(),
+                status: if analysis.total_events > 0 {
+                    "PASS"
+                } else {
+                    "FAIL"
+                }
+                .to_string(),
                 details: format!("{} events recorded for audit trail", analysis.total_events),
             });
             checks.push(ComplianceCheck {
                 requirement: "DORA Art. 12 - Integrity Protection".to_string(),
-                status: if analysis.chain_intact { "PASS" } else { "FAIL" }.to_string(),
+                status: if analysis.chain_intact {
+                    "PASS"
+                } else {
+                    "FAIL"
+                }
+                .to_string(),
                 details: "Cryptographic hash chain protects log integrity".to_string(),
             });
         }
         ReportTemplate::Nis2 => {
             checks.push(ComplianceCheck {
                 requirement: "NIS2 Art. 21 - Security Measures".to_string(),
-                status: if analysis.chain_intact { "PASS" } else { "FAIL" }.to_string(),
+                status: if analysis.chain_intact {
+                    "PASS"
+                } else {
+                    "FAIL"
+                }
+                .to_string(),
                 details: "Audit logs are cryptographically protected".to_string(),
             });
             checks.push(ComplianceCheck {
                 requirement: "NIS2 Art. 23 - Incident Reporting".to_string(),
                 status: "INFO".to_string(),
-                details: format!("Audit trail contains {} events for incident analysis", analysis.total_events),
+                details: format!(
+                    "Audit trail contains {} events for incident analysis",
+                    analysis.total_events
+                ),
             });
         }
         ReportTemplate::Generic => {
             checks.push(ComplianceCheck {
                 requirement: "Digital Signatures".to_string(),
-                status: if analysis.signatures_found > 0 { "PASS" } else { "WARN" }.to_string(),
-                details: format!("{}/{} events have digital signatures",
-                    analysis.signatures_found, analysis.total_events),
+                status: if analysis.signatures_found > 0 {
+                    "PASS"
+                } else {
+                    "WARN"
+                }
+                .to_string(),
+                details: format!(
+                    "{}/{} events have digital signatures",
+                    analysis.signatures_found, analysis.total_events
+                ),
             });
         }
     }
@@ -303,7 +349,7 @@ fn generate_recommendations(analysis: &WalAnalysis) -> Vec<String> {
 
     if !analysis.chain_intact {
         recommendations.push(
-            "CRITICAL: Chain integrity compromised. Investigate potential tampering.".to_string()
+            "CRITICAL: Chain integrity compromised. Investigate potential tampering.".to_string(),
         );
     }
 
@@ -321,9 +367,8 @@ fn generate_recommendations(analysis: &WalAnalysis) -> Vec<String> {
     }
 
     if analysis.total_events == 0 {
-        recommendations.push(
-            "WARNING: No events found. Verify WAL path and log collection.".to_string()
-        );
+        recommendations
+            .push("WARNING: No events found. Verify WAL path and log collection.".to_string());
     }
 
     if recommendations.is_empty() {
@@ -399,7 +444,12 @@ mod tests {
         let wal_file = dir.path().join("00000001.wal");
         let mut file = File::create(&wal_file).unwrap();
 
-        writeln!(file, "{}", create_test_entry(1, 1000, GENESIS_PREV_HASH, "p1")).unwrap();
+        writeln!(
+            file,
+            "{}",
+            create_test_entry(1, 1000, GENESIS_PREV_HASH, "p1")
+        )
+        .unwrap();
 
         let analysis = analyze_wal(dir.path()).unwrap();
 
@@ -414,12 +464,20 @@ mod tests {
         let wal_file = dir.path().join("00000001.wal");
         let mut file = File::create(&wal_file).unwrap();
 
-        writeln!(file, "{}", create_test_entry(1, 1000, GENESIS_PREV_HASH, "p1")).unwrap();
+        writeln!(
+            file,
+            "{}",
+            create_test_entry(1, 1000, GENESIS_PREV_HASH, "p1")
+        )
+        .unwrap();
 
         let report = generate_report(dir.path(), ReportTemplate::Dora).unwrap();
 
         assert_eq!(report.verification_summary.overall_status, "PASS");
-        assert!(report.compliance_checklist.iter().any(|c| c.requirement.contains("DORA")));
+        assert!(report
+            .compliance_checklist
+            .iter()
+            .any(|c| c.requirement.contains("DORA")));
     }
 
     #[test]

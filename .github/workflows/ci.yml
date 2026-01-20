@@ -1,0 +1,131 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  python-sdk:
+    name: Python SDK
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: 'pip'
+          cache-dependency-path: spine-sdk-python/pyproject.toml
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e "./spine-sdk-python[dev]"
+
+      - name: Lint with ruff
+        run: ruff check spine-sdk-python/
+
+      - name: Type check with mypy
+        run: mypy spine-sdk-python/spine_client/ --ignore-missing-imports
+
+      - name: Run tests
+        run: pytest spine-sdk-python/ -v
+
+  rust-cli:
+    name: Rust CLI
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            spine-cli/target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('spine-cli/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Check formatting
+        run: cargo fmt --manifest-path spine-cli/Cargo.toml -- --check
+
+      - name: Clippy
+        run: cargo clippy --manifest-path spine-cli/Cargo.toml -- -D warnings
+
+      - name: Run tests
+        run: cargo test --manifest-path spine-cli/Cargo.toml --release --locked
+
+  integration:
+    name: Integration Test
+    runs-on: ubuntu-latest
+    needs: [python-sdk, rust-cli]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: 'pip'
+          cache-dependency-path: spine-sdk-python/pyproject.toml
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            spine-cli/target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('spine-cli/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Install Python SDK
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ./spine-sdk-python
+
+      - name: Build CLI
+        run: cargo build --manifest-path spine-cli/Cargo.toml --release --locked
+
+      - name: Run integration test
+        run: |
+          rm -rf ./test_wal
+          python - <<'PY'
+          import asyncio
+          from spine_client import WAL, WALConfig, SigningKey
+
+          async def main():
+              key = SigningKey.generate()
+              wal = WAL(key, WALConfig(data_dir='./test_wal'))
+              await wal.initialize()
+              await wal.append({'event': 'test1', 'user': 'ci'})
+              await wal.append({'event': 'test2', 'user': 'ci'})
+              await wal.close()
+              print('WAL created successfully')
+
+          asyncio.run(main())
+          PY
+          ./spine-cli/target/release/spine-cli verify --wal ./test_wal
+          echo "Integration test passed!"

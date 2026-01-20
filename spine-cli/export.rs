@@ -118,7 +118,10 @@ pub fn run(
     if output_format != crate::OutputFormat::Quiet {
         eprintln!("Exported {} events", result.events_exported);
         if result.events_exported > 0 {
-            eprintln!("  Sequence range: {:?} - {:?}", result.first_sequence, result.last_sequence);
+            eprintln!(
+                "  Sequence range: {:?} - {:?}",
+                result.first_sequence, result.last_sequence
+            );
             if result.chain_root.len() >= 16 {
                 eprintln!("  Chain root: {}...", &result.chain_root[..16]);
             }
@@ -154,7 +157,13 @@ fn export_wal(
     };
 
     if let Some(ref mut csv_w) = csv_writer {
-        csv_w.write_record(["sequence", "timestamp", "event_type", "source", "payload_hash"])?;
+        csv_w.write_record([
+            "sequence",
+            "timestamp",
+            "event_type",
+            "source",
+            "payload_hash",
+        ])?;
     }
 
     let mut event_count = 0u64;
@@ -213,7 +222,9 @@ fn export_wal(
     }
 
     if let Some(csv_w) = csv_writer {
-        csv_w.into_inner().map_err(|e| ExportError::Io(e.into_error()))?;
+        csv_w
+            .into_inner()
+            .map_err(|e| ExportError::Io(e.into_error()))?;
     }
 
     let chain_root = hex::encode(chain_hasher.finalize().as_bytes());
@@ -249,7 +260,10 @@ fn export_wal(
     })
 }
 
-fn parse_time_filter(from: Option<&str>, to: Option<&str>) -> Result<Option<(i64, i64)>, ExportError> {
+fn parse_time_filter(
+    from: Option<&str>,
+    to: Option<&str>,
+) -> Result<Option<(i64, i64)>, ExportError> {
     match (from, to) {
         (None, None) => Ok(None),
         (Some(f), Some(t)) => {
@@ -371,10 +385,7 @@ mod tests {
 
     #[test]
     fn test_parse_time_filter_valid() {
-        let result = parse_time_filter(
-            Some("2025-01-01T00:00:00Z"),
-            Some("2025-01-02T00:00:00Z"),
-        );
+        let result = parse_time_filter(Some("2025-01-01T00:00:00Z"), Some("2025-01-02T00:00:00Z"));
         assert!(result.is_ok());
         let (start, end) = result.unwrap().unwrap();
         assert!(start < end);
@@ -382,10 +393,7 @@ mod tests {
 
     #[test]
     fn test_parse_time_filter_invalid_range() {
-        let result = parse_time_filter(
-            Some("2025-01-02T00:00:00Z"),
-            Some("2025-01-01T00:00:00Z"),
-        );
+        let result = parse_time_filter(Some("2025-01-02T00:00:00Z"), Some("2025-01-01T00:00:00Z"));
         assert!(matches!(result, Err(ExportError::InvalidTimeRange(_))));
     }
 
@@ -418,7 +426,12 @@ mod tests {
         let mut file = File::create(&wal_file).unwrap();
 
         let zero_hash = "0".repeat(64);
-        writeln!(file, "{}", create_test_entry(1, 1000, &zero_hash, "payload1")).unwrap();
+        writeln!(
+            file,
+            "{}",
+            create_test_entry(1, 1000, &zero_hash, "payload1")
+        )
+        .unwrap();
         writeln!(file, "{}", create_test_entry(2, 2000, "hash1", "payload2")).unwrap();
 
         let result = export_wal(dir.path(), None, ExportFormat::Jsonl, None, None, false).unwrap();
@@ -432,7 +445,7 @@ mod tests {
     fn test_chain_root_matches_verify_computation() {
         // Verify that export and verify use the same hash computation
         use crate::wal_types::compute_entry_hash;
-        
+
         let entry = WalEntry {
             sequence: 1,
             timestamp_ns: 1000000,
@@ -498,7 +511,11 @@ mod tests {
         // Valid normal timestamp (2025-01-01)
         let ts_normal = 1735689600_000_000_000i64;
         let result = super::format_timestamp(ts_normal);
-        assert!(result.contains("2025"), "Expected 2025 in timestamp: {}", result);
+        assert!(
+            result.contains("2025"),
+            "Expected 2025 in timestamp: {}",
+            result
+        );
 
         // Far future timestamp (beyond safe nanos range)
         let ts_far_future = 9_100_000_000_000_000_000i64; // ~2258 AD
@@ -520,12 +537,19 @@ mod tests {
         let ts_far_past = -9_100_000_000_000_000_000i64;
         let result = super::format_timestamp(ts_far_past);
         // Should contain UNDERFLOW marker
-        assert!(result.contains("UNDERFLOW") || result.contains("-"),
-            "Expected UNDERFLOW or negative year in: {}", result);
+        assert!(
+            result.contains("UNDERFLOW") || result.contains("-"),
+            "Expected UNDERFLOW or negative year in: {}",
+            result
+        );
 
         // Zero timestamp (1970-01-01 00:00:00)
         let ts_zero = 0i64;
         let result = super::format_timestamp(ts_zero);
-        assert!(result.contains("1970"), "Expected 1970 in timestamp: {}", result);
+        assert!(
+            result.contains("1970"),
+            "Expected 1970 in timestamp: {}",
+            result
+        );
     }
 }

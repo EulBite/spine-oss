@@ -161,7 +161,10 @@ fn compute_stats(wal_path: &Path) -> Result<WalStats, Box<dyn std::error::Error>
     Ok(stats)
 }
 
-fn find_event(wal_path: &Path, target_seq: u64) -> Result<Option<WalEntry>, Box<dyn std::error::Error>> {
+fn find_event(
+    wal_path: &Path,
+    target_seq: u64,
+) -> Result<Option<WalEntry>, Box<dyn std::error::Error>> {
     let segments = collect_segments(wal_path)?;
 
     for segment_path in &segments {
@@ -189,7 +192,10 @@ fn find_event(wal_path: &Path, target_seq: u64) -> Result<Option<WalEntry>, Box<
     Ok(None)
 }
 
-fn get_last_events(wal_path: &Path, n: usize) -> Result<Vec<EventDisplay>, Box<dyn std::error::Error>> {
+fn get_last_events(
+    wal_path: &Path,
+    n: usize,
+) -> Result<Vec<EventDisplay>, Box<dyn std::error::Error>> {
     use std::collections::VecDeque;
 
     if n == 0 {
@@ -237,13 +243,20 @@ fn print_events_table(events: &[EventDisplay]) {
     let has_sdk_events = events.iter().any(|e| e.event_id.is_some());
 
     if has_sdk_events {
-        println!("\n{:>8} │ {:^23} │ {:^20} │ {:^10} │ {:^6} │ {:^8}",
-            "SEQ", "TIMESTAMP", "EVENT TYPE", "HASH", "SIGNED", "RECEIPT");
+        println!(
+            "\n{:>8} │ {:^23} │ {:^20} │ {:^10} │ {:^6} │ {:^8}",
+            "SEQ", "TIMESTAMP", "EVENT TYPE", "HASH", "SIGNED", "RECEIPT"
+        );
         println!("{}", "─".repeat(90));
 
         for event in events {
-            let receipt_status = if event.has_receipt { "✓ AUTH" } else { "- CLAIM" };
-            println!("{:>8} │ {:^23} │ {:^20} │ {:^10} │ {:^6} │ {:^8}",
+            let receipt_status = if event.has_receipt {
+                "✓ AUTH"
+            } else {
+                "- CLAIM"
+            };
+            println!(
+                "{:>8} │ {:^23} │ {:^20} │ {:^10} │ {:^6} │ {:^8}",
                 event.sequence,
                 &event.timestamp[..std::cmp::min(23, event.timestamp.len())],
                 truncate_str(&event.event_type, 20),
@@ -253,12 +266,15 @@ fn print_events_table(events: &[EventDisplay]) {
             );
         }
     } else {
-        println!("\n{:>8} │ {:^23} │ {:^20} │ {:^15} │ {:^10} │ {:^6}",
-            "SEQ", "TIMESTAMP", "EVENT TYPE", "SOURCE", "HASH", "SIGNED");
+        println!(
+            "\n{:>8} │ {:^23} │ {:^20} │ {:^15} │ {:^10} │ {:^6}",
+            "SEQ", "TIMESTAMP", "EVENT TYPE", "SOURCE", "HASH", "SIGNED"
+        );
         println!("{}", "─".repeat(95));
 
         for event in events {
-            println!("{:>8} │ {:^23} │ {:^20} │ {:^15} │ {:^10} │ {:^6}",
+            println!(
+                "{:>8} │ {:^23} │ {:^20} │ {:^15} │ {:^10} │ {:^6}",
                 event.sequence,
                 &event.timestamp[..std::cmp::min(23, event.timestamp.len())],
                 truncate_str(&event.event_type, 20),
@@ -329,7 +345,9 @@ fn truncate_str(s: &str, max_len: usize) -> String {
     }
 }
 
-fn collect_segments(wal_path: &Path) -> Result<Vec<std::path::PathBuf>, Box<dyn std::error::Error>> {
+fn collect_segments(
+    wal_path: &Path,
+) -> Result<Vec<std::path::PathBuf>, Box<dyn std::error::Error>> {
     Ok(collect_wal_segments(wal_path)?)
 }
 
@@ -367,7 +385,12 @@ mod tests {
         let wal_file = dir.path().join("00000001.wal");
         let mut file = File::create(&wal_file).unwrap();
 
-        writeln!(file, "{}", create_test_entry(1, 1000, GENESIS_PREV_HASH, "p1")).unwrap();
+        writeln!(
+            file,
+            "{}",
+            create_test_entry(1, 1000, GENESIS_PREV_HASH, "p1")
+        )
+        .unwrap();
         writeln!(file, "{}", create_test_entry(2, 2000, "hash1", "p2")).unwrap();
 
         let stats = compute_stats(dir.path()).unwrap();
@@ -384,7 +407,12 @@ mod tests {
         let wal_file = dir.path().join("00000001.wal");
         let mut file = File::create(&wal_file).unwrap();
 
-        writeln!(file, "{}", create_test_entry(1, 1000, GENESIS_PREV_HASH, "p1")).unwrap();
+        writeln!(
+            file,
+            "{}",
+            create_test_entry(1, 1000, GENESIS_PREV_HASH, "p1")
+        )
+        .unwrap();
         writeln!(file, "{}", create_test_entry(2, 2000, "hash1", "p2")).unwrap();
 
         let event = find_event(dir.path(), 2).unwrap();
@@ -402,7 +430,12 @@ mod tests {
         let mut file = File::create(&wal_file).unwrap();
 
         for i in 1..=10 {
-            writeln!(file, "{}", create_test_entry(i, i as i64 * 1000, "prev", &format!("p{}", i))).unwrap();
+            writeln!(
+                file,
+                "{}",
+                create_test_entry(i, i as i64 * 1000, "prev", &format!("p{}", i))
+            )
+            .unwrap();
         }
 
         let events = get_last_events(dir.path(), 3).unwrap();
