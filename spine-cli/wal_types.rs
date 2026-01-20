@@ -169,6 +169,16 @@ pub fn validate_entry_hashes(entry: &WalEntry) -> Vec<String> {
     errors
 }
 
+/// Current WAL format version.
+/// Increment when making breaking changes to the record structure.
+///
+/// Version history:
+///   1 - Initial format (2025-01): All fields documented below
+///
+/// Compatibility: CLI supports reading all previous versions.
+#[allow(dead_code)]
+pub const WAL_FORMAT_VERSION: u32 = 1;
+
 /// WAL entry as stored on disk.
 ///
 /// This structure supports both the Spine server WAL format and the SDK's
@@ -186,6 +196,10 @@ pub fn validate_entry_hashes(entry: &WalEntry) -> Vec<String> {
 /// - `public_key`: also accepts `pubkey`, `pk`, `key_id`
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct WalEntry {
+    /// Format version for forward compatibility (defaults to 1 for old records)
+    #[serde(default = "default_format_version")]
+    pub format_version: u32,
+
     /// Monotonically increasing sequence number (1-indexed)
     #[serde(alias = "seq")]
     pub sequence: u64,
@@ -281,6 +295,10 @@ pub struct Receipt {
 
 fn default_sig_alg() -> String {
     "ed25519".to_string()
+}
+
+fn default_format_version() -> u32 {
+    1 // Default to v1 for old records without format_version field
 }
 
 /// Collect WAL segment files from a directory.

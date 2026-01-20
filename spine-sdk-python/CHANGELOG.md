@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-01-20
+
+### Added
+
+- **Unicode NFC normalization** in `canonical_json()` - Ensures equivalent Unicode sequences (e.g., `é` vs `e+combining accent`) produce identical hashes
+- **`format_version` field** in WAL records - Enables forward compatibility for future format changes
+- **`WAL_FORMAT_VERSION` constant** - Exported for version checking
+- **Test vectors** (`test-vectors/vectors.json`) - Public test cases for cross-implementation verification
+- **Documentation**:
+  - `docs/KEY_MANAGEMENT.md` - Key generation, rotation, and revocation procedures
+  - `docs/WAL_FORMAT.md` - Complete WAL format specification
+
+### Changed
+
+- Records now include `format_version: 1` field (defaults to 1 for backwards compatibility)
+- `canonical_json()` now applies NFC normalization before serialization
+
 ## [0.2.0] - 2026-01-17
 
 ### Breaking Changes

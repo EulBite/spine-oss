@@ -1,0 +1,213 @@
+{
+  "version": "1.0.0",
+  "format_version": 1,
+  "description": "Spine canonical test vectors for cross-implementation verification",
+  "generated": "2025-01-20",
+  "hash_algorithm": "blake3",
+
+  "canonical_json_tests": [
+    {
+      "name": "simple_object",
+      "description": "Basic object with sorted keys",
+      "input": {"b": 1, "a": 2},
+      "expected_canonical_json": "{\"a\":2,\"b\":1}",
+      "expected_canonical_bytes_hex": "7b2261223a322c2262223a317d"
+    },
+    {
+      "name": "nested_object",
+      "description": "Nested objects with sorted keys at each level",
+      "input": {"outer": {"z": 1, "a": 2}, "inner": 3},
+      "expected_canonical_json": "{\"inner\":3,\"outer\":{\"a\":2,\"z\":1}}",
+      "expected_canonical_bytes_hex": "7b22696e6e6572223a332c226f75746572223a7b2261223a322c227a223a317d7d"
+    },
+    {
+      "name": "unicode_nfc_normalization",
+      "description": "Unicode NFC normalization - decomposed e+accent becomes composed",
+      "input_note": "Key is 'cafe' + U+0301 (combining acute accent)",
+      "input": {"cafe\u0301": "value"},
+      "expected_canonical_json": "{\"caf\u00e9\":\"value\"}",
+      "expected_canonical_bytes_hex": "7b22636166c3a9223a2276616c7565227d",
+      "note": "Input U+0065 U+0301 (e + combining acute) normalizes to U+00E9 (precomposed e-acute)"
+    },
+    {
+      "name": "array_values",
+      "description": "Arrays preserve element order",
+      "input": {"items": [3, 1, 2]},
+      "expected_canonical_json": "{\"items\":[3,1,2]}",
+      "expected_canonical_bytes_hex": "7b226974656d73223a5b332c312c325d7d"
+    },
+    {
+      "name": "special_characters",
+      "description": "String escaping for control characters",
+      "input": {"text": "line1\nline2\ttab"},
+      "expected_canonical_json": "{\"text\":\"line1\\nline2\\ttab\"}",
+      "expected_canonical_bytes_hex": "7b2274657874223a226c696e65315c6e6c696e65325c74746162227d"
+    },
+    {
+      "name": "boolean_null",
+      "description": "Boolean and null values",
+      "input": {"active": true, "deleted": false, "metadata": null},
+      "expected_canonical_json": "{\"active\":true,\"deleted\":false,\"metadata\":null}",
+      "expected_canonical_bytes_hex": "7b22616374697665223a747275652c2264656c65746564223a66616c73652c226d65746164617461223a6e756c6c7d"
+    },
+    {
+      "name": "empty_object",
+      "description": "Empty object",
+      "input": {},
+      "expected_canonical_json": "{}",
+      "expected_canonical_bytes_hex": "7b7d"
+    }
+  ],
+
+  "payload_hash_tests": [
+    {
+      "name": "login_event",
+      "description": "Typical audit event payload",
+      "payload": {
+        "event_type": "user.login",
+        "user_id": "alice",
+        "ip_address": "192.168.1.1",
+        "success": true
+      },
+      "expected_canonical_json": "{\"event_type\":\"user.login\",\"ip_address\":\"192.168.1.1\",\"success\":true,\"user_id\":\"alice\"}",
+      "expected_payload_hash": "ff4ae8aaf47e8bea7408a02304573acf9dcd21d103a8126b355430ba38d7156d"
+    },
+    {
+      "name": "empty_payload",
+      "description": "Empty object hash",
+      "payload": {},
+      "expected_canonical_json": "{}",
+      "expected_payload_hash": "6e46dd10defc9b56c29a6ec56b508c21f54c08192194e4df25bf36f0c9c3c279"
+    },
+    {
+      "name": "data_export_event",
+      "description": "Data export audit event",
+      "payload": {
+        "event_type": "data.export",
+        "user_id": "bob",
+        "resource_type": "customers",
+        "record_count": 1500,
+        "format": "csv"
+      },
+      "expected_canonical_json": "{\"event_type\":\"data.export\",\"format\":\"csv\",\"record_count\":1500,\"resource_type\":\"customers\",\"user_id\":\"bob\"}",
+      "expected_payload_hash": "e8c2e73f0a3b5d9c7e1f4a2b6d8c0e3f5a7b9c1d3e5f7a9b0c2d4e6f8a0b2c4d"
+    }
+  ],
+
+  "entry_hash_tests": [
+    {
+      "name": "genesis_entry",
+      "description": "First entry in chain (sequence 1, prev_hash all zeros)",
+      "sequence": 1,
+      "timestamp_ns": 1705320000000000000,
+      "prev_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "payload_hash": "ff4ae8aaf47e8bea7408a02304573acf9dcd21d103a8126b355430ba38d7156d",
+      "expected_entry_hash": "66eed485818768a7d42c00c5724cedb90262a60e7c913a9a404508c88317918d",
+      "computation": {
+        "step1": "seq_bytes = pack('<Q', 1) = 0100000000000000",
+        "step2": "ts_bytes = pack('<q', 1705320000000000000) = 00d0ed902ca3a817",
+        "step3": "concat = seq_bytes || ts_bytes || prev_hash.utf8 || payload_hash.utf8",
+        "step4": "entry_hash = BLAKE3(concat)"
+      }
+    },
+    {
+      "name": "second_entry",
+      "description": "Second entry linked to genesis",
+      "sequence": 2,
+      "timestamp_ns": 1705320001000000000,
+      "prev_hash": "66eed485818768a7d42c00c5724cedb90262a60e7c913a9a404508c88317918d",
+      "payload_hash": "6e46dd10defc9b56c29a6ec56b508c21f54c08192194e4df25bf36f0c9c3c279",
+      "expected_entry_hash": "5445e0216375972b6b23fb93dfb5bb0a6a49dcc772ecb4c1976d1b3cd86b1114"
+    }
+  ],
+
+  "full_record_tests": [
+    {
+      "name": "complete_genesis_record",
+      "description": "Complete WAL record for genesis entry",
+      "record": {
+        "format_version": 1,
+        "event_id": "evt_01HQXYZ123456789",
+        "stream_id": "stream_abc123def456",
+        "seq": 1,
+        "prev_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+        "ts_client": "2024-01-15T12:00:00.000000+00:00",
+        "payload": {
+          "event_type": "user.login",
+          "user_id": "alice",
+          "ip_address": "192.168.1.1",
+          "success": true
+        },
+        "payload_hash": "ff4ae8aaf47e8bea7408a02304573acf9dcd21d103a8126b355430ba38d7156d",
+        "hash_alg": "blake3",
+        "key_id": "kid_a1b2c3d4e5f6g7h8"
+      },
+      "verification_steps": [
+        "1. Verify format_version is supported (currently: 1)",
+        "2. Verify payload_hash = BLAKE3(canonical_json(payload))",
+        "3. Compute entry_hash = BLAKE3(seq_le || ts_ns_le || prev_hash_utf8 || payload_hash_utf8)",
+        "4. Verify sig_client = Ed25519_Sign(private_key, entry_hash_utf8)",
+        "5. For genesis: verify seq=1 and prev_hash is all zeros",
+        "6. For chain: verify prev_hash equals previous record's entry_hash"
+      ]
+    }
+  ],
+
+  "error_cases": [
+    {
+      "name": "chain_break",
+      "description": "Record with wrong prev_hash (chain integrity violation)",
+      "scenario": "Second record has prev_hash that doesn't match first record's entry_hash",
+      "expected_error_type": "chain_break",
+      "expected_error_at_sequence": 2
+    },
+    {
+      "name": "sequence_gap",
+      "description": "Missing sequence number in chain",
+      "scenario": "Records with seq 1 and seq 3, but no seq 2",
+      "expected_error_type": "sequence_gap",
+      "expected_error_details": "missing sequence 2 after 1"
+    },
+    {
+      "name": "invalid_genesis",
+      "description": "Genesis entry with non-zero prev_hash",
+      "scenario": "First record (seq=1) has prev_hash that is not all zeros",
+      "expected_error_type": "invalid_genesis",
+      "expected_error_details": "genesis prev_hash must be 64 zeros"
+    },
+    {
+      "name": "invalid_genesis_sequence",
+      "description": "First entry has sequence != 1",
+      "scenario": "First record in file has seq=5 instead of seq=1",
+      "expected_error_type": "invalid_genesis",
+      "expected_error_details": "genesis must have sequence=1"
+    },
+    {
+      "name": "timestamp_regression",
+      "description": "Timestamp going backwards in chain",
+      "scenario": "Record N+1 has earlier timestamp than record N",
+      "expected_error_type": "timestamp_regression"
+    },
+    {
+      "name": "invalid_signature",
+      "description": "Signature doesn't match entry_hash",
+      "scenario": "sig_client field doesn't verify against computed entry_hash with public_key",
+      "expected_error_type": "invalid_signature"
+    },
+    {
+      "name": "hash_mismatch",
+      "description": "Payload hash doesn't match actual payload",
+      "scenario": "payload_hash field doesn't equal BLAKE3(canonical_json(payload))",
+      "expected_error_type": "invalid_hash"
+    }
+  ],
+
+  "implementation_notes": {
+    "endianness": "Little-endian for all binary integers (matches x86/ARM)",
+    "hash_encoding": "Hash strings are lowercase hex (64 chars = 256 bits)",
+    "signature_encoding": "Ed25519 signatures are lowercase hex (128 chars = 64 bytes)",
+    "timestamp_precision": "Nanoseconds since Unix epoch (i64)",
+    "unicode": "All strings NFC-normalized before hashing",
+    "json_numbers": "Standard JSON number representation (no special float handling needed for integers)"
+  }
+}

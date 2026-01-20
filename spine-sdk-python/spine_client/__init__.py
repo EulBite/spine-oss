@@ -52,6 +52,7 @@ from .types import (
     Resource,
     generate_event_id,
     generate_stream_id,
+    WAL_FORMAT_VERSION,
 )
 
 # Crypto
@@ -91,7 +92,7 @@ from .sidecar import AuditSidecar
 # LocalWAL emits DeprecationWarning in __init__
 from .local_wal import LocalWAL
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 __all__ = [
     # Types
     "LocalRecord",
@@ -103,6 +104,7 @@ __all__ = [
     "Resource",
     "generate_event_id",
     "generate_stream_id",
+    "WAL_FORMAT_VERSION",
     # Crypto
     "SigningKey",
     "VerifyingKey",

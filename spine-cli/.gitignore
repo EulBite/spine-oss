@@ -1,0 +1,19 @@
+# Rust build artifacts
+target/
+
+# Cargo lock file (optional for binaries, but we include it for reproducible builds)
+# Cargo.lock
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test output
+*.wal
+test_wal/

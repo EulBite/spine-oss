@@ -137,6 +137,22 @@ class Receipt:
 
 
 # =============================================================================
+# Format Version
+# =============================================================================
+
+# Current WAL record format version.
+# Increment this when making breaking changes to the record structure.
+#
+# Version history:
+#   1 - Initial format (2025-01): event_id, stream_id, seq, prev_hash, ts_client,
+#       payload, payload_hash, hash_alg, sig_client, key_id, public_key, receipt
+#
+# Compatibility guarantee: CLI and SDK will support reading all previous versions.
+# Breaking changes require version bump and migration documentation.
+WAL_FORMAT_VERSION = 1
+
+
+# =============================================================================
 # LocalRecord (WAL entry with crypto metadata)
 # =============================================================================
 
@@ -148,6 +164,7 @@ class LocalRecord:
     This is the internal representation. Users create Events, SDK creates Records.
 
     Attributes:
+        format_version: WAL format version (for forward compatibility)
         event_id: Unique event identifier (UUID v7 / ULID preferred)
         stream_id: Stream identifier (derived from key_id or explicit)
         seq: Monotonic sequence number within this stream
@@ -171,12 +188,14 @@ class LocalRecord:
     hash_alg: str
     sig_client: str
     key_id: str
+    format_version: int = WAL_FORMAT_VERSION
     public_key: Optional[str] = None  # Full public key hex for CLI compatibility
     receipt: Optional[Receipt] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize for WAL storage."""
         result = {
+            "format_version": self.format_version,
             "event_id": self.event_id,
             "stream_id": self.stream_id,
             "seq": self.seq,
@@ -211,6 +230,7 @@ class LocalRecord:
             hash_alg=data["hash_alg"],
             sig_client=data["sig_client"],
             key_id=data["key_id"],
+            format_version=data.get("format_version", 1),  # Default to v1 for old records
             public_key=data.get("public_key"),
             receipt=receipt,
         )

@@ -18,6 +18,7 @@ Security model:
 import hashlib
 import json
 import secrets
+import unicodedata
 from dataclasses import dataclass
 from typing import Optional, Union, Tuple
 from datetime import datetime, timezone
@@ -45,11 +46,40 @@ except ImportError:
 # Canonical JSON
 # =============================================================================
 
+def _normalize_unicode(obj: Union[dict, list, str, int, float, bool, None]) -> Union[dict, list, str, int, float, bool, None]:
+    """
+    Recursively apply Unicode NFC normalization to all strings.
+
+    This ensures that equivalent Unicode sequences produce identical bytes:
+    - "café" (é as single codepoint U+00E9)
+    - "café" (e + combining acute U+0065 U+0301)
+    Both normalize to the composed form (NFC).
+
+    Args:
+        obj: JSON-serializable object
+
+    Returns:
+        Object with all strings NFC-normalized
+    """
+    if isinstance(obj, str):
+        return unicodedata.normalize('NFC', obj)
+    elif isinstance(obj, dict):
+        return {
+            unicodedata.normalize('NFC', k) if isinstance(k, str) else k: _normalize_unicode(v)
+            for k, v in obj.items()
+        }
+    elif isinstance(obj, list):
+        return [_normalize_unicode(item) for item in obj]
+    else:
+        return obj
+
+
 def canonical_json(obj: Union[dict, list, str, int, float, bool, None]) -> bytes:
     """
     Serialize object to canonical JSON (deterministic byte representation).
 
     Rules (RFC 8785-like):
+    - Unicode NFC normalization (ensures equivalent strings produce same bytes)
     - Keys sorted lexicographically (Unicode code points)
     - No whitespace
     - Numbers: no unnecessary leading zeros, no trailing zeros after decimal
@@ -65,9 +95,14 @@ def canonical_json(obj: Union[dict, list, str, int, float, bool, None]) -> bytes
     Example:
         >>> canonical_json({"b": 1, "a": 2})
         b'{"a":2,"b":1}'
+        >>> canonical_json({"café": 1}) == canonical_json({"cafe\u0301": 1})  # NFC normalization
+        True
     """
+    # Apply Unicode NFC normalization before serialization
+    normalized = _normalize_unicode(obj)
+
     return json.dumps(
-        obj,
+        normalized,
         sort_keys=True,
         separators=(',', ':'),
         ensure_ascii=False,

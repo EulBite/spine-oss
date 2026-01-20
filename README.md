@@ -67,32 +67,33 @@ The CLI verifies:
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                     Your Application                        │
-└─────────────────────────────────────────────────────────────┘
-                            │
-                            ▼
-┌─────────────────────────────────────────────────────────────┐
-│  spine-sdk-python                                           │
-│  (Ed25519 signing + BLAKE3 hash chain)                      │
-└─────────────────────────────────────────────────────────────┘
-                            │
-              ┌─────────────┴─────────────┐
-              ▼                           ▼
-┌─────────────────────┐       ┌───────────────────────────────┐
-│  Local WAL Files    │       │  Spine Server (optional)      │
-│  (JSONL, signed)    │       │  (adds independent timestamps)│
-└─────────────────────┘       └───────────────────────────────┘
-              │
-              ▼
-┌─────────────────────┐
-│  spine-cli verify   │  ◄── Independent verification
-└─────────────────────┘      (no server, no trust required)
++-------------------------------------------------------------+
+|                     Your Application                         |
++-------------------------------------------------------------+
+                            |
+                            v
++-------------------------------------------------------------+
+|  spine-sdk-python                                            |
+|  (Ed25519 signing + BLAKE3 hash chain)                       |
++-------------------------------------------------------------+
+                            |
+              +-------------+-------------+
+              |                           |
+              v                           v
++---------------------+       +-------------------------------+
+|  Local WAL Files    |       |  Spine Server (optional,      |
+|  (JSONL, signed)    |       |  on-premise deployment)       |
++---------------------+       +-------------------------------+
+              |
+              v
++---------------------+
+|  spine-cli verify   |  <-- Independent verification
++---------------------+      (no server, no trust required)
 ```
 
 **Standalone mode**: SDK creates signed WAL files, CLI verifies them. No server needed.
 
-**With Spine server**: Adds independent timestamps and third-party attestation for regulatory requirements.
+**With Spine server (on-premise)**: Deploy Spine in your infrastructure for independent timestamps and third-party attestation. Your data never leaves your network.
 
 ## Why Open Source?
 
