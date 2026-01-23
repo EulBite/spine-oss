@@ -61,7 +61,6 @@ class WALConfig:
     data_dir: str = "./spine_wal"
     # Segment settings
     max_segment_size: int = 10 * 1024 * 1024  # 10MB per segment
-    max_segments: int = 100                    # Max segment files
     # Retention (buffer, not permanent storage)
     retention_hours: int = 72                  # 3 days default
     # Compaction
@@ -104,7 +103,9 @@ class WAL:
         self.namespace = namespace
 
         self.data_dir = Path(self.config.data_dir)
-        self.stream_id = generate_stream_id(signing_key.key_id, namespace)
+        # stream_id will be loaded/created in initialize() - don't derive from key_id
+        # to ensure stability across key rotations
+        self._stream_id: str | None = None
 
         # Serialize all writes to guarantee:
         # 1. Monotonic sequence numbers (no duplicates under concurrent appends)
@@ -119,6 +120,23 @@ class WAL:
         self._seq = 0
         self._prev_hash = GENESIS_HASH
         self._current_segment: Path | None = None
+
+    @property
+    def stream_id(self) -> str:
+        """
+        Stream ID for this WAL.
+
+        This is stable across key rotations - the stream identifies the "logical source",
+        while the signing key identifies the "current signer".
+        """
+        if self._stream_id is None:
+            raise RuntimeError("WAL not initialized - call initialize() first")
+        return self._stream_id
+
+    @property
+    def _stream_meta_file(self) -> Path:
+        """Path to the stream metadata file (created once, never changes)."""
+        return self.data_dir / "stream.meta.json"
 
     @property
     def _receipt_file(self) -> Path:
@@ -137,6 +155,10 @@ class WAL:
 
         self.data_dir.mkdir(parents=True, exist_ok=True)
 
+        # Load or create stable stream_id (must happen before state recovery)
+        # Stream ID is stable across key rotations - derived from initial key_id
+        await self._load_or_create_stream_id()
+
         # Recover chain state
         await self._recover_state()
 
@@ -150,18 +172,49 @@ class WAL:
             f"data_dir={self.data_dir}"
         )
 
+    async def _load_or_create_stream_id(self) -> None:
+        """
+        Load or create a stable stream_id for this WAL directory.
+
+        Stream ID is stored once and never changes, even after key rotations.
+        This ensures records from all keys are in the same logical stream.
+        """
+        if self._stream_meta_file.exists():
+            try:
+                async with aiofiles.open(self._stream_meta_file) as f:
+                    meta = json.loads(await f.read())
+                    self._stream_id = meta["stream_id"]
+                    logger.debug(f"Loaded stream_id from meta: {self._stream_id}")
+                    return
+            except Exception as e:
+                logger.warning(f"Failed to load stream meta: {e}")
+
+        # Create new stream_id (first initialization of this WAL directory)
+        self._stream_id = generate_stream_id(self.signing_key.key_id, self.namespace)
+        meta = {
+            "stream_id": self._stream_id,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "initial_key_id": self.signing_key.key_id,
+            "namespace": self.namespace,
+        }
+        try:
+            async with aiofiles.open(self._stream_meta_file, "w") as f:
+                await f.write(json.dumps(meta, indent=2))
+            logger.info(f"Created new stream: {self._stream_id}")
+        except Exception as e:
+            logger.error(f"Failed to save stream meta: {e}")
+
     async def _recover_state(self) -> None:
         """Recover chain state from existing segments."""
-        # Try to load saved state
+        # Try to load saved state (stream_id is now stable, no need to check match)
         if self._state_file.exists():
             try:
                 async with aiofiles.open(self._state_file) as f:
                     state = json.loads(await f.read())
-                    if state.get("stream_id") == self.stream_id:
-                        self._seq = state.get("seq", 0)
-                        self._prev_hash = state.get("prev_hash", GENESIS_HASH)
-                        logger.debug(f"Recovered state: seq={self._seq}")
-                        return
+                    self._seq = state.get("seq", 0)
+                    self._prev_hash = state.get("prev_hash", GENESIS_HASH)
+                    logger.debug(f"Recovered state: seq={self._seq}")
+                    return
             except Exception as e:
                 logger.warning(f"Failed to load state file: {e}")
 
@@ -172,6 +225,8 @@ class WAL:
         """Rebuild chain state by scanning all segments."""
         max_seq = 0
         last_entry_hash = GENESIS_HASH
+        corrupted_lines = 0
+        total_lines = 0
 
         segments = sorted(self.data_dir.glob("segment_*.jsonl"))
         for segment in segments:
@@ -179,27 +234,38 @@ class WAL:
                 async with aiofiles.open(segment) as f:
                     async for line in f:
                         if line.strip():
+                            total_lines += 1
                             try:
                                 record = LocalRecord.from_dict(json.loads(line))
                                 if record.stream_id == self.stream_id:
                                     if record.seq > max_seq:
                                         max_seq = record.seq
                                         # Recompute entry hash to get prev_hash for next entry
+                                        # Always BLAKE3 for CLI compatibility
                                         ts_ns = timestamp_to_nanos(record.ts_client)
                                         last_entry_hash, _ = compute_entry_hash(
                                             seq=record.seq,
                                             timestamp_ns=ts_ns,
                                             prev_hash=record.prev_hash,
                                             payload_hash=record.payload_hash,
+                                            algorithm=HashAlgorithm.BLAKE3,
                                         )
                             except (json.JSONDecodeError, KeyError):
+                                corrupted_lines += 1
                                 continue
             except Exception as e:
                 logger.warning(f"Error reading segment {segment}: {e}")
 
         self._seq = max_seq
         self._prev_hash = last_entry_hash
-        logger.debug(f"Rebuilt state from segments: seq={self._seq}")
+
+        if corrupted_lines > 0:
+            logger.warning(
+                f"Rebuilt state from segments: seq={self._seq}, "
+                f"corrupted_lines_skipped={corrupted_lines}/{total_lines}"
+            )
+        else:
+            logger.debug(f"Rebuilt state from segments: seq={self._seq}")
 
     async def _save_state(self) -> None:
         """Persist chain state to disk."""

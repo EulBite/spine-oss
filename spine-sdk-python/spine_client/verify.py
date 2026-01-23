@@ -426,11 +426,18 @@ def verify_chain(
         prev_seq = record.seq
         prev_timestamp = record.ts_client
 
+    # Verification mode for audit interpretation
+    mode = "forensic" if strict_file_order else "resilient"
+
     if errors:
         return VerifyResult.failure(
             VerifyStatus.INVALID_CHAIN,
             f"Chain verification failed: {len(errors)} error(s)",
-            details={"errors": errors, "total_records": len(records)}
+            details={
+                "errors": errors,
+                "total_records": len(records),
+                "mode": mode,
+            }
         )
 
     return VerifyResult.success(
@@ -440,6 +447,7 @@ def verify_chain(
             "first_seq": ordered_records[0].seq,
             "last_seq": ordered_records[-1].seq,
             "all_have_receipts": all_authoritative,
+            "mode": mode,
         }
     )
 
@@ -502,8 +510,12 @@ def extract_key_chain(
 
     The chain of trust works as follows:
     1. root_key is always trusted
-    2. A key_rotation record signed by key A authorizes key B
+    2. A key_rotation record signed by key A authorizes key B (signature verified)
     3. Key B can then authorize key C, and so on
+
+    Security: Each rotation record's signature is verified with the authorizing
+    key BEFORE the new key is added to the trusted set. This prevents forged
+    rotation records from injecting untrusted keys.
 
     This allows verification using only the root key, even if multiple
     key rotations have occurred.
@@ -532,6 +544,17 @@ def extract_key_chain(
             )
             continue
 
+        # CRITICAL: Verify the rotation record's signature BEFORE trusting new key
+        # This prevents forged rotation records from injecting malicious keys
+        signing_key = trusted_keys[record.key_id]
+        sig_result = verify_record_signature(record, signing_key)
+        if not sig_result.valid:
+            logger.warning(
+                f"Key rotation record at seq={record.seq} has invalid signature - "
+                f"ignoring (possible forgery): {sig_result.message}"
+            )
+            continue
+
         # Extract the new key from the rotation payload
         try:
             rotation = KeyRotationPayload.from_dict(record.payload)
@@ -540,7 +563,7 @@ def extract_key_chain(
             trusted_keys[rotation.new_key_id] = new_key
             logger.debug(
                 f"Key rotation: {record.key_id} authorized {rotation.new_key_id} "
-                f"at seq={record.seq}"
+                f"at seq={record.seq} (signature verified)"
             )
         except (ValueError, KeyError) as e:
             logger.warning(f"Invalid key rotation payload at seq={record.seq}: {e}")
@@ -598,12 +621,14 @@ def verify_chain_with_root(
     key_rotations = len(trusted_keys) - 1  # Exclude root key
 
     # Second pass: verify using the chain of trust
+    # Note: if we sorted above, we pass the pre-sorted list but still honor
+    # the user's strict_file_order choice for the verification mode/semantics
     result = verify_chain(
         ordered_records,
         client_key=trusted_keys,
         server_key=server_key,
         strict_timestamps=strict_timestamps,
-        strict_file_order=True,  # Already sorted above if needed
+        strict_file_order=strict_file_order,
     )
 
     # Add key rotation info to details

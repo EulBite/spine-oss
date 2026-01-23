@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-01-24
+
+### Security
+
+- **Chain of trust signature verification** - Rotation records are now verified BEFORE trusting the new key. Previously, `extract_key_chain()` could be tricked with forged rotation records. Now signatures must be valid under the current trusted key before adding new keys to the trust chain.
+
+### Fixed
+
+- **Critical: stream_id persistence after key rotation** - `stream_id` is now persisted independently in `stream.meta.json`. Previously, `stream_id` was derived from the initial `key_id`, causing WAL recovery to fail after key rotation + restart (old records appeared to belong to a different stream).
+- **`verify_chain_with_root()` ignored `strict_file_order` flag** - Was always using forensic mode internally, now correctly honors the user's choice
+- **Explicit BLAKE3 in `_rebuild_state_from_segments()`** - Hardening: explicitly specifies `algorithm=HashAlgorithm.BLAKE3` to prevent divergence if default changes
+- **`compute_entry_hash()` now enforces BLAKE3** - Raises `ValueError` if called with non-BLAKE3 algorithm. Previously the "BLAKE3 required" contract was documented but not enforced at runtime
+
+### Changed
+
+- **Verification mode in results** - `verify_chain()` and `verify_wal()` now include `mode` in `result.details` (`"forensic"` or `"resilient"`) for audit interpretation
+- **CLI shows verification mode** - `spine-sdk verify` now displays the mode used
+- **Removed unused `max_segments`** - Removed from `WALConfig` (was defined but never used)
+
+### Added
+
+- **Corrupted lines diagnostic** - `_rebuild_state_from_segments()` now counts and logs corrupted lines skipped during recovery
+- **Test: `test_key_rotation_survives_restart`** - Verifies stream_id stability across key rotation and WAL restart
+- **Test: `test_forged_rotation_record_rejected`** - Verifies forged rotation records with invalid signatures are rejected
+
 ## [0.3.0] - 2026-01-20
 
 ### Added

@@ -641,8 +641,13 @@ def compute_entry_hash(
     """
     import struct
 
-    # Entry hash MUST use BLAKE3 for CLI compatibility
-    if algorithm == HashAlgorithm.BLAKE3 and not HAS_BLAKE3:
+    # Entry hash MUST use BLAKE3 for CLI compatibility - enforce contract
+    if algorithm != HashAlgorithm.BLAKE3:
+        raise ValueError(
+            f"Entry hash must use BLAKE3 for CLI compatibility, got: {algorithm}"
+        )
+
+    if not HAS_BLAKE3:
         raise RuntimeError(
             "BLAKE3 is required for entry hash computation (CLI compatibility). "
             "Install it with: pip install blake3"

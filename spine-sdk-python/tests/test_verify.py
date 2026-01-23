@@ -867,6 +867,75 @@ async def test_rotation_without_root_key_fails(wal_config):
 
 
 @pytest.mark.asyncio
+async def test_forged_rotation_record_rejected(wal_config):
+    """Forged rotation record should be rejected (signature not verified).
+
+    Attack scenario:
+    - Attacker modifies a rotation record's key_id to claim it's from a trusted key
+    - But the signature doesn't match because it wasn't actually signed by that key
+    - extract_key_chain must verify signatures before trusting new keys
+    """
+    from spine_client.verify import extract_key_chain
+
+    key_a = SigningKey.generate(key_id="key-a")
+    attacker_key = SigningKey.generate(key_id="attacker")
+
+    wal = WAL(key_a, wal_config)
+    await wal.initialize()
+
+    # Create legitimate record with key_a
+    await wal.append({"event": "legitimate"})
+
+    # Attacker creates a "rotation" record signed by their key, but claims key_id=key-a
+    # This simulates modifying the key_id field of a record after signing
+    from spine_client.types import KeyRotationPayload
+    from spine_client.crypto import hash_payload, compute_entry_hash, timestamp_to_nanos
+    from datetime import datetime, timezone
+
+    malicious_rotation = KeyRotationPayload(
+        new_key_id="attacker-key",
+        new_public_key=attacker_key.public_key().to_hex(),
+        reason="forged",
+    )
+
+    payload = malicious_rotation.to_dict()
+    payload_hash, hash_alg = hash_payload(payload)
+    ts_client = datetime.now(timezone.utc).isoformat()
+    ts_ns = timestamp_to_nanos(ts_client)
+
+    # Sign with attacker key but claim it's from key-a
+    entry_hash, _ = compute_entry_hash(
+        seq=2,
+        timestamp_ns=ts_ns,
+        prev_hash="0" * 64,
+        payload_hash=payload_hash,
+    )
+    forged_sig = attacker_key.sign_hex(entry_hash.encode("utf-8"))
+
+    forged_record = LocalRecord(
+        event_id="evt_forged",
+        stream_id="test",
+        seq=2,
+        prev_hash="0" * 64,
+        ts_client=ts_client,
+        payload=payload,
+        payload_hash=payload_hash,
+        hash_alg=hash_alg,
+        sig_client=forged_sig,
+        key_id="key-a",  # LIE: claims to be from key-a
+    )
+
+    # Try to extract key chain - forged record should be rejected
+    trusted = extract_key_chain([forged_record], key_a.public_key())
+
+    # Should only have root key, not the attacker's key
+    assert "key-a" in trusted
+    assert "attacker-key" not in trusted, (
+        "Forged rotation record should be rejected - signature doesn't match claimed key_id"
+    )
+
+
+@pytest.mark.asyncio
 async def test_key_rotation_payload_detection():
     """KeyRotationPayload.is_rotation_payload should correctly identify payloads."""
     from spine_client.types import KeyRotationPayload
@@ -882,3 +951,54 @@ async def test_key_rotation_payload_detection():
     # Payload with different type
     other = {"type": "audit_event", "action": "login"}
     assert not KeyRotationPayload.is_rotation_payload(other)
+
+
+@pytest.mark.asyncio
+async def test_key_rotation_survives_restart(wal_config):
+    """WAL should maintain chain continuity after key rotation + restart.
+
+    Critical test: stream_id must be stable across key rotations.
+    Before fix: restart with new key generated new stream_id, lost all records.
+    After fix: stream_id is persisted, records from all keys are in same stream.
+    """
+    from spine_client.verify import verify_wal_with_root
+
+    key_a = SigningKey.generate(key_id="key-a")
+    key_b = SigningKey.generate(key_id="key-b")
+
+    # Session 1: Create WAL with key_a, add records, rotate to key_b
+    wal1 = WAL(key_a, wal_config)
+    await wal1.initialize()
+    original_stream_id = wal1.stream_id
+
+    await wal1.append({"event": "before rotation"})
+    await wal1.rotate_key(key_b)
+    await wal1.append({"event": "after rotation"})
+
+    # Session 2: Restart with key_b (simulates process restart after rotation)
+    wal2 = WAL(key_b, wal_config)  # Note: opening with NEW key
+    await wal2.initialize()
+
+    # Critical assertion: stream_id must be the same
+    assert wal2.stream_id == original_stream_id, (
+        "Stream ID must be stable across key rotations. "
+        f"Expected {original_stream_id}, got {wal2.stream_id}"
+    )
+
+    # Should continue from correct sequence
+    assert wal2._seq == 3, f"Expected seq=3, got {wal2._seq}"
+
+    # Add more records with key_b
+    await wal2.append({"event": "after restart"})
+
+    # Collect all records
+    records = []
+    async for record in wal2.iter_records():
+        records.append(record)
+
+    assert len(records) == 4, f"Expected 4 records, got {len(records)}"
+
+    # Verify chain of trust from root key
+    result = await verify_wal_with_root(wal2, key_a.public_key())
+    assert result.valid, f"Chain of trust verification failed: {result.details}"
+    assert result.details["key_rotations"] == 1
