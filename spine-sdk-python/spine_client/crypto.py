@@ -15,12 +15,15 @@ Security model:
 - Server receipts = "authoritative proof" (proves system of record accepted it)
 """
 
+import base64
 import hashlib
 import json
+import os
 import secrets
 import unicodedata
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 
 # Ed25519 via cryptography library (widely available)
 try:
@@ -254,6 +257,178 @@ class SigningKey:
             _private_key=private_key,
             created_at=datetime.now(timezone.utc).isoformat(),
         )
+
+    @classmethod
+    def from_env(
+        cls,
+        env_var: str = "SPINE_SIGNING_KEY",
+        key_id_var: str | None = "SPINE_KEY_ID",
+    ) -> "SigningKey":
+        """
+        Load signing key from environment variable.
+
+        Supports multiple formats (auto-detected):
+        - Hex string (64 chars): raw 32-byte key as hex
+        - Base64 string (44 chars): raw 32-byte key as base64
+        - PEM string: full PEM-encoded private key
+
+        Args:
+            env_var: Environment variable containing the key (default: SPINE_SIGNING_KEY)
+            key_id_var: Environment variable for key ID (default: SPINE_KEY_ID).
+                        If None or not set, generates a random key_id.
+
+        Returns:
+            SigningKey instance
+
+        Raises:
+            ValueError: If environment variable not set or key format invalid
+
+        Example:
+            # Set in environment:
+            # export SPINE_SIGNING_KEY=<64-char-hex>
+            # export SPINE_KEY_ID=my-service-key
+
+            key = SigningKey.from_env()
+        """
+        key_data = os.environ.get(env_var)
+        if not key_data:
+            raise ValueError(
+                f"Environment variable {env_var} not set. "
+                f"Set it to a hex (64 chars), base64 (44 chars), or PEM private key."
+            )
+
+        # Get key_id from env or generate
+        key_id = None
+        if key_id_var:
+            key_id = os.environ.get(key_id_var)
+        if not key_id:
+            key_id = f"kid_{secrets.token_hex(8)}"
+
+        key_data = key_data.strip()
+
+        # Detect format and load
+        if key_data.startswith("-----BEGIN"):
+            # PEM format
+            return cls.from_pem(key_data.encode("utf-8"), key_id)
+        elif len(key_data) == 64:
+            # Hex format (32 bytes = 64 hex chars)
+            try:
+                key_bytes = bytes.fromhex(key_data)
+                return cls.from_bytes(key_bytes, key_id)
+            except ValueError as e:
+                raise ValueError(f"Invalid hex key in {env_var}: {e}") from e
+        elif len(key_data) == 44 and key_data.endswith("="):
+            # Base64 format (32 bytes = 44 base64 chars with padding)
+            try:
+                key_bytes = base64.b64decode(key_data)
+                if len(key_bytes) != 32:
+                    raise ValueError(f"Base64 key must decode to 32 bytes, got {len(key_bytes)}")
+                return cls.from_bytes(key_bytes, key_id)
+            except Exception as e:
+                raise ValueError(f"Invalid base64 key in {env_var}: {e}") from e
+        else:
+            raise ValueError(
+                f"Unrecognized key format in {env_var}. "
+                f"Expected: 64-char hex, 44-char base64, or PEM. Got {len(key_data)} chars."
+            )
+
+    @classmethod
+    def from_file(
+        cls,
+        path: str | Path,
+        key_id: str | None = None,
+    ) -> "SigningKey":
+        """
+        Load signing key from file.
+
+        Supports multiple formats (auto-detected by content):
+        - PEM file: standard Ed25519 private key PEM
+        - Hex file: 64-character hex string (optionally with newline)
+        - Raw binary: 32-byte raw key (useful for keys from other tools)
+
+        Args:
+            path: Path to key file
+            key_id: Key identifier. If None, uses filename (without extension).
+
+        Returns:
+            SigningKey instance
+
+        Raises:
+            FileNotFoundError: If file doesn't exist
+            ValueError: If key format invalid
+
+        Example:
+            # From PEM file
+            key = SigningKey.from_file("/etc/spine/signing.pem")
+
+            # From hex file
+            key = SigningKey.from_file("./my-key.hex", key_id="production-signer")
+        """
+        path = Path(path)
+        if not path.exists():
+            raise FileNotFoundError(f"Key file not found: {path}")
+
+        # Default key_id from filename
+        if key_id is None:
+            key_id = path.stem  # filename without extension
+
+        # Read file content
+        content = path.read_bytes()
+
+        # Detect format
+        if content.startswith(b"-----BEGIN"):
+            # PEM format
+            return cls.from_pem(content, key_id)
+        elif len(content) == 32:
+            # Raw 32-byte key
+            return cls.from_bytes(content, key_id)
+        elif len(content) in (64, 65):  # 64 hex chars, optionally with newline
+            # Hex format
+            try:
+                hex_str = content.decode("utf-8").strip()
+                key_bytes = bytes.fromhex(hex_str)
+                return cls.from_bytes(key_bytes, key_id)
+            except (UnicodeDecodeError, ValueError) as e:
+                raise ValueError(f"Invalid hex key file {path}: {e}") from e
+        else:
+            raise ValueError(
+                f"Unrecognized key format in {path}. "
+                f"Expected: PEM, 32-byte raw, or 64-char hex. Got {len(content)} bytes."
+            )
+
+    def save_to_file(
+        self,
+        path: str | Path,
+        key_format: str = "pem",
+    ) -> Path:
+        """
+        Save signing key to file.
+
+        Args:
+            path: Destination path
+            key_format: Output format - "pem", "hex", or "raw"
+
+        Returns:
+            Path to saved file
+
+        Example:
+            key = SigningKey.generate(key_id="my-key")
+            key.save_to_file("./my-key.pem")
+            key.save_to_file("./my-key.hex", key_format="hex")
+        """
+        path = Path(path)
+
+        if key_format == "pem":
+            content = self.to_pem()
+        elif key_format == "hex":
+            content = self.to_bytes().hex().encode("utf-8")
+        elif key_format == "raw":
+            content = self.to_bytes()
+        else:
+            raise ValueError(f"Unknown format: {key_format}. Use 'pem', 'hex', or 'raw'.")
+
+        path.write_bytes(content)
+        return path
 
     def sign(self, data: bytes) -> bytes:
         """
