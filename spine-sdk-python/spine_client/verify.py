@@ -39,6 +39,7 @@ from .crypto import (
     timestamp_to_nanos,
 )
 from .types import (
+    KeyRotationPayload,
     LocalRecord,
     VerifyResult,
     VerifyStatus,
@@ -483,6 +484,168 @@ async def verify_wal(
     return verify_chain(
         records,
         client_keys,
+        server_key,
+        strict_timestamps=strict_timestamps,
+        strict_file_order=strict_file_order,
+    )
+
+
+def extract_key_chain(
+    records: list[LocalRecord],
+    root_key: VerifyingKey,
+) -> dict[str, VerifyingKey]:
+    """
+    Extract the chain of trust from key rotation records.
+
+    Scans records for key_rotation payloads and builds a mapping of all
+    authorized keys, starting from the root key.
+
+    The chain of trust works as follows:
+    1. root_key is always trusted
+    2. A key_rotation record signed by key A authorizes key B
+    3. Key B can then authorize key C, and so on
+
+    This allows verification using only the root key, even if multiple
+    key rotations have occurred.
+
+    Args:
+        records: List of LocalRecord to scan
+        root_key: The initial trusted key (root of trust)
+
+    Returns:
+        Dict mapping key_id to VerifyingKey for all authorized keys
+    """
+    from .crypto import VerifyingKey as VK
+
+    trusted_keys: dict[str, VerifyingKey] = {root_key.key_id: root_key}
+
+    for record in records:
+        # Check if this is a key rotation record
+        if not KeyRotationPayload.is_rotation_payload(record.payload):
+            continue
+
+        # The rotation record must be signed by an already-trusted key
+        if record.key_id not in trusted_keys:
+            logger.warning(
+                f"Key rotation record at seq={record.seq} signed by unknown key "
+                f"'{record.key_id}' - ignoring (not in chain of trust)"
+            )
+            continue
+
+        # Extract the new key from the rotation payload
+        try:
+            rotation = KeyRotationPayload.from_dict(record.payload)
+            new_key_bytes = bytes.fromhex(rotation.new_public_key)
+            new_key = VK.from_bytes(new_key_bytes, rotation.new_key_id)
+            trusted_keys[rotation.new_key_id] = new_key
+            logger.debug(
+                f"Key rotation: {record.key_id} authorized {rotation.new_key_id} "
+                f"at seq={record.seq}"
+            )
+        except (ValueError, KeyError) as e:
+            logger.warning(f"Invalid key rotation payload at seq={record.seq}: {e}")
+            continue
+
+    return trusted_keys
+
+
+def verify_chain_with_root(
+    records: list[LocalRecord],
+    root_key: VerifyingKey,
+    server_key: VerifyingKey | None = None,
+    strict_timestamps: bool = True,
+    strict_file_order: bool = False,
+) -> VerifyResult:
+    """
+    Verify a chain using only the root key (follows chain of trust).
+
+    This is the recommended verification method when key rotations may have
+    occurred. It:
+    1. Scans for key rotation records
+    2. Builds the chain of trust from root_key
+    3. Verifies each record with the appropriate key from the chain
+
+    Args:
+        records: List of LocalRecord in sequence order
+        root_key: The initial trusted key (root of trust)
+        server_key: Server's public key (optional)
+        strict_timestamps: If True, require timestamps to be monotonically increasing
+        strict_file_order: If True, verify records in file order (forensic mode)
+
+    Returns:
+        VerifyResult with details including key_rotations count
+
+    Example:
+        # Verify a WAL that has undergone key rotations
+        records = list(wal.iter_records())
+        result = verify_chain_with_root(records, original_root_key)
+
+        if result.valid:
+            print(f"Valid chain with {result.details['key_rotations']} rotations")
+    """
+    if not records:
+        return VerifyResult.success(details={"count": 0, "key_rotations": 0})
+
+    # Sort records if not in strict mode
+    if strict_file_order:
+        ordered_records = records
+    else:
+        ordered_records = sorted(records, key=lambda r: r.seq)
+
+    # Build chain of trust by scanning rotation records
+    # First pass: collect all authorized keys
+    trusted_keys = extract_key_chain(ordered_records, root_key)
+    key_rotations = len(trusted_keys) - 1  # Exclude root key
+
+    # Second pass: verify using the chain of trust
+    result = verify_chain(
+        ordered_records,
+        client_key=trusted_keys,
+        server_key=server_key,
+        strict_timestamps=strict_timestamps,
+        strict_file_order=True,  # Already sorted above if needed
+    )
+
+    # Add key rotation info to details
+    if result.valid:
+        result.details["key_rotations"] = key_rotations
+        result.details["trusted_keys"] = list(trusted_keys.keys())
+
+    return result
+
+
+async def verify_wal_with_root(
+    wal: "WAL",
+    root_key: VerifyingKey,
+    server_key: VerifyingKey | None = None,
+    strict_timestamps: bool = True,
+    strict_file_order: bool = False,
+) -> VerifyResult:
+    """
+    Verify a WAL using only the root key (follows chain of trust).
+
+    Use this when:
+    - Key rotations may have occurred
+    - You only have/trust the original root key
+    - You want to verify the entire key chain is valid
+
+    Args:
+        wal: WAL instance to verify
+        root_key: The initial trusted key (root of trust)
+        server_key: Server's public key (optional)
+        strict_timestamps: If True, require timestamps to be monotonically increasing
+        strict_file_order: If True, verify records in file order (forensic mode)
+
+    Returns:
+        VerifyResult for entire WAL including key rotation info
+    """
+    records = []
+    async for record in wal.iter_records():
+        records.append(record)
+
+    return verify_chain_with_root(
+        records,
+        root_key,
         server_key,
         strict_timestamps=strict_timestamps,
         strict_file_order=strict_file_order,

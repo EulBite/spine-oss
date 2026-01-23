@@ -704,3 +704,181 @@ def test_verify_chain_key_provider_types():
     assert verify_chain([], pub).valid
     assert verify_chain([], [pub]).valid
     assert verify_chain([], {"test-key": pub}).valid
+
+
+# =============================================================================
+# Key Rotation Chain of Trust
+# =============================================================================
+
+
+@pytest.mark.asyncio
+async def test_key_rotation_creates_record(wal_config):
+    """rotate_key should create a rotation record signed by old key."""
+    key_a = SigningKey.generate(key_id="key-a")
+    key_b = SigningKey.generate(key_id="key-b")
+
+    wal = WAL(key_a, wal_config)
+    await wal.initialize()
+
+    # Append a record with key_a
+    r1 = await wal.append({"event": "before rotation"})
+    assert r1.key_id == "key-a"
+
+    # Rotate to key_b
+    rotation_record = await wal.rotate_key(key_b, reason="scheduled")
+
+    # Rotation record should be signed by key_a (old key)
+    assert rotation_record.key_id == "key-a"
+
+    # Rotation payload should contain key_b info
+    from spine_client.types import KeyRotationPayload
+    assert KeyRotationPayload.is_rotation_payload(rotation_record.payload)
+    assert rotation_record.payload["new_key_id"] == "key-b"
+    assert rotation_record.payload["reason"] == "scheduled"
+
+    # Future records should use key_b
+    r3 = await wal.append({"event": "after rotation"})
+    assert r3.key_id == "key-b"
+
+
+@pytest.mark.asyncio
+async def test_verify_with_root_key(wal_config):
+    """verify_chain_with_root should verify using chain of trust."""
+    from spine_client.verify import verify_chain_with_root
+
+    key_a = SigningKey.generate(key_id="key-a")
+    key_b = SigningKey.generate(key_id="key-b")
+
+    wal = WAL(key_a, wal_config)
+    await wal.initialize()
+
+    # Records with key_a
+    await wal.append({"event": "first"})
+    await wal.append({"event": "second"})
+
+    # Rotate to key_b
+    await wal.rotate_key(key_b, reason="test rotation")
+
+    # Records with key_b
+    await wal.append({"event": "third"})
+    await wal.append({"event": "fourth"})
+
+    # Collect all records
+    records = []
+    async for record in wal.iter_records():
+        records.append(record)
+
+    # Verify with root key only - should follow chain of trust
+    result = verify_chain_with_root(records, key_a.public_key())
+
+    assert result.valid, f"Chain of trust verification failed: {result.details}"
+    assert result.details["key_rotations"] == 1
+    assert "key-a" in result.details["trusted_keys"]
+    assert "key-b" in result.details["trusted_keys"]
+
+
+@pytest.mark.asyncio
+async def test_verify_wal_with_root(wal_config):
+    """verify_wal_with_root should work for complete WAL verification."""
+    from spine_client.verify import verify_wal_with_root
+
+    key_a = SigningKey.generate(key_id="root-key")
+    key_b = SigningKey.generate(key_id="rotated-key")
+
+    wal = WAL(key_a, wal_config)
+    await wal.initialize()
+
+    await wal.append({"event": "initial"})
+    await wal.rotate_key(key_b)
+    await wal.append({"event": "after rotation"})
+
+    # Verify with just the root key
+    result = await verify_wal_with_root(wal, key_a.public_key())
+
+    assert result.valid
+    assert result.details["count"] == 3  # 2 events + 1 rotation
+    assert result.details["key_rotations"] == 1
+
+
+@pytest.mark.asyncio
+async def test_multiple_key_rotations(wal_config):
+    """Chain of trust should work with multiple rotations."""
+    from spine_client.verify import verify_chain_with_root
+
+    key_a = SigningKey.generate(key_id="key-a")
+    key_b = SigningKey.generate(key_id="key-b")
+    key_c = SigningKey.generate(key_id="key-c")
+
+    wal = WAL(key_a, wal_config)
+    await wal.initialize()
+
+    # Phase 1: key_a
+    await wal.append({"phase": 1})
+
+    # Rotate a -> b
+    await wal.rotate_key(key_b)
+
+    # Phase 2: key_b
+    await wal.append({"phase": 2})
+
+    # Rotate b -> c
+    await wal.rotate_key(key_c)
+
+    # Phase 3: key_c
+    await wal.append({"phase": 3})
+
+    # Collect records
+    records = []
+    async for record in wal.iter_records():
+        records.append(record)
+
+    # Verify with root key only
+    result = verify_chain_with_root(records, key_a.public_key())
+
+    assert result.valid, f"Failed: {result.details}"
+    assert result.details["key_rotations"] == 2
+    assert set(result.details["trusted_keys"]) == {"key-a", "key-b", "key-c"}
+
+
+@pytest.mark.asyncio
+async def test_rotation_without_root_key_fails(wal_config):
+    """Verification should fail if root key is wrong."""
+    from spine_client.verify import verify_chain_with_root
+
+    key_a = SigningKey.generate(key_id="key-a")
+    key_b = SigningKey.generate(key_id="key-b")
+    wrong_root = SigningKey.generate(key_id="wrong-root")
+
+    wal = WAL(key_a, wal_config)
+    await wal.initialize()
+
+    await wal.append({"event": "test"})
+    await wal.rotate_key(key_b)
+    await wal.append({"event": "after"})
+
+    records = []
+    async for record in wal.iter_records():
+        records.append(record)
+
+    # Verify with wrong root key - should fail
+    result = verify_chain_with_root(records, wrong_root.public_key())
+
+    assert not result.valid, "Should fail with wrong root key"
+
+
+@pytest.mark.asyncio
+async def test_key_rotation_payload_detection():
+    """KeyRotationPayload.is_rotation_payload should correctly identify payloads."""
+    from spine_client.types import KeyRotationPayload
+
+    # Rotation payload
+    rotation = {"type": "key_rotation", "new_key_id": "new", "new_public_key": "abc123"}
+    assert KeyRotationPayload.is_rotation_payload(rotation)
+
+    # Regular payload
+    regular = {"event": "something", "data": 123}
+    assert not KeyRotationPayload.is_rotation_payload(regular)
+
+    # Payload with different type
+    other = {"type": "audit_event", "action": "login"}
+    assert not KeyRotationPayload.is_rotation_payload(other)

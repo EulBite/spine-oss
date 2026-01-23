@@ -41,7 +41,13 @@ from .crypto import (
     hash_payload,
     timestamp_to_nanos,
 )
-from .types import LocalRecord, Receipt, generate_event_id, generate_stream_id
+from .types import (
+    KeyRotationPayload,
+    LocalRecord,
+    Receipt,
+    generate_event_id,
+    generate_stream_id,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -325,6 +331,68 @@ class WAL:
             except Exception as e:
                 logger.error(f"Failed to attach receipt for {event_id}: {e}")
                 return False
+
+    async def rotate_key(
+        self,
+        new_key: SigningKey,
+        reason: str | None = None,
+    ) -> LocalRecord:
+        """
+        Rotate to a new signing key with cryptographic chain of trust.
+
+        Creates a special "key rotation" record signed by the CURRENT (old) key
+        that authorizes the new key. This creates a verifiable chain of trust:
+        anyone with the original root key can verify all subsequent keys.
+
+        After this call:
+        - The rotation record is in the WAL (signed by old key)
+        - Future records will be signed by new key
+        - Verifiers can trace key chain from root
+
+        Args:
+            new_key: New SigningKey to rotate to
+            reason: Optional reason for rotation (e.g., "scheduled", "compromise")
+
+        Returns:
+            LocalRecord containing the key rotation payload
+
+        Example:
+            # Generate new key
+            new_key = SigningKey.generate(key_id="key-2025")
+
+            # Rotate (creates signed rotation record)
+            rotation_record = await wal.rotate_key(new_key, reason="annual rotation")
+
+            # Future appends use new key
+            await wal.append({"event": "first with new key"})
+
+            # Verification only needs original root key
+            result = await verify_wal(wal, root_key=original_key)
+        """
+        await self.initialize()
+
+        # Create rotation payload
+        rotation_payload = KeyRotationPayload(
+            new_key_id=new_key.key_id,
+            new_public_key=new_key.public_key().to_hex(),
+            reason=reason,
+            effective_seq=self._seq + 2,  # Will be effective starting from next regular record
+        )
+
+        # Append rotation record signed by OLD key
+        # This is the critical step: old key vouches for new key
+        record = await self.append(rotation_payload.to_dict())
+
+        # Now switch to new key for future records
+        old_key_id = self.signing_key.key_id
+        self.signing_key = new_key
+
+        logger.info(
+            f"Key rotated: {old_key_id} -> {new_key.key_id}, "
+            f"rotation_record={record.event_id}, seq={record.seq}"
+        )
+
+        return record
 
     async def get_record(self, event_id: str) -> LocalRecord | None:
         """

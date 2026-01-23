@@ -136,6 +136,70 @@ class Receipt:
 
 
 # =============================================================================
+# Key Rotation Record
+# =============================================================================
+
+
+@dataclass
+class KeyRotationPayload:
+    """
+    Special payload for key rotation records.
+
+    When embedded in a LocalRecord signed by the OLD key, this creates a
+    cryptographic chain of trust: the old key authorizes the new key.
+
+    This enables verification starting from only the initial "root" key -
+    each rotation record proves the legitimacy of the next key in the chain.
+
+    Attributes:
+        type: Always "key_rotation" (for payload type detection)
+        new_key_id: ID of the new signing key
+        new_public_key: Hex-encoded Ed25519 public key
+        reason: Optional reason for rotation (e.g., "scheduled", "compromise")
+        effective_seq: Sequence number from which new key is valid (default: next seq)
+
+    Example workflow:
+        1. Generate new key: key_b = SigningKey.generate(key_id="key-2025")
+        2. Create rotation record signed by key_a:
+           await wal.rotate_key(key_b, reason="scheduled annual rotation")
+        3. Future records use key_b
+        4. Verifier only needs key_a (root) - rotation records prove key_b is valid
+    """
+    type: str = "key_rotation"
+    new_key_id: str = ""
+    new_public_key: str = ""  # Hex-encoded
+    reason: str | None = None
+    effective_seq: int | None = None  # If None, effective immediately (next seq)
+
+    def to_dict(self) -> dict[str, Any]:
+        result: dict[str, Any] = {
+            "type": self.type,
+            "new_key_id": self.new_key_id,
+            "new_public_key": self.new_public_key,
+        }
+        if self.reason:
+            result["reason"] = self.reason
+        if self.effective_seq is not None:
+            result["effective_seq"] = self.effective_seq
+        return result
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "KeyRotationPayload":
+        return cls(
+            type=data.get("type", "key_rotation"),
+            new_key_id=data["new_key_id"],
+            new_public_key=data["new_public_key"],
+            reason=data.get("reason"),
+            effective_seq=data.get("effective_seq"),
+        )
+
+    @staticmethod
+    def is_rotation_payload(payload: dict[str, Any]) -> bool:
+        """Check if a payload dict is a key rotation record."""
+        return payload.get("type") == "key_rotation"
+
+
+# =============================================================================
 # Format Version
 # =============================================================================
 
