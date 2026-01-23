@@ -453,3 +453,254 @@ async def test_all_authoritative_requires_all_receipts(signing_key, wal_config):
     # Even with one receipt attached, without server key to verify it,
     # and with second record having no receipt, should not be authoritative
     assert not result.is_authoritative
+
+
+# =============================================================================
+# Receipt Substitution Attack
+# =============================================================================
+
+
+@pytest.mark.asyncio
+async def test_receipt_substitution_attack(signing_key, wal_config):
+    """Attaching Record 1's receipt to Record 2 should fail verification.
+
+    Attack scenario:
+    - Attacker has a valid receipt for Record 1
+    - Attacker modifies Record 2's payload (e.g., changing transfer amount)
+    - Attacker attaches Record 1's receipt to the modified Record 2
+    - Verification should detect that receipt.event_id != record.event_id
+      or receipt.payload_hash != record.payload_hash
+    """
+    from spine_client.types import Receipt
+    from spine_client.verify import verify_receipt
+
+    wal = WAL(signing_key, wal_config)
+    await wal.initialize()
+
+    r1 = await wal.append({"event": "transfer", "amount": 100})
+    r2 = await wal.append({"event": "transfer", "amount": 200})
+
+    # Create a "valid" receipt for Record 1
+    # (In reality, this would come from the server with a real signature)
+    r1_receipt = Receipt(
+        event_id=r1.event_id,
+        payload_hash=r1.payload_hash,
+        server_time="2026-01-01T00:00:00Z",
+        server_seq=1,
+        receipt_sig="valid_sig_for_r1",
+        server_key_id="server-key",
+    )
+
+    # Attack: Try to attach r1's receipt to r2
+    # This simulates an attacker trying to "prove" r2 was accepted
+    # by reusing r1's receipt
+    stolen_receipt = Receipt(
+        event_id=r1_receipt.event_id,  # Wrong! Points to r1
+        payload_hash=r1_receipt.payload_hash,  # Wrong! r1's hash
+        server_time=r1_receipt.server_time,
+        server_seq=r1_receipt.server_seq,
+        receipt_sig=r1_receipt.receipt_sig,
+        server_key_id=r1_receipt.server_key_id,
+    )
+
+    # Manually attach the stolen receipt to r2
+    # (bypassing attach_receipt which might have its own checks)
+    r2_with_stolen_receipt = LocalRecord(
+        event_id=r2.event_id,
+        stream_id=r2.stream_id,
+        seq=r2.seq,
+        prev_hash=r2.prev_hash,
+        ts_client=r2.ts_client,
+        payload=r2.payload,
+        payload_hash=r2.payload_hash,
+        hash_alg=r2.hash_alg,
+        sig_client=r2.sig_client,
+        key_id=r2.key_id,
+        public_key=r2.public_key,
+        receipt=stolen_receipt,
+    )
+
+    # Create a mock server key for verification
+    server_signing_key = SigningKey.generate(key_id="server-key")
+    server_key = server_signing_key.public_key()
+
+    # Verify the record with the stolen receipt
+    result = verify_receipt(r2_with_stolen_receipt, server_key)
+
+    # Should fail because:
+    # 1. receipt.event_id (r1's) != record.event_id (r2's)
+    # 2. receipt.payload_hash (r1's) != record.payload_hash (r2's)
+    assert not result.valid
+    assert "payload_hash" in result.message.lower() or "doesn't match" in result.message.lower()
+
+
+@pytest.mark.asyncio
+async def test_receipt_event_id_mismatch(signing_key, wal_config):
+    """Receipt with wrong event_id should fail even if payload_hash matches."""
+    from spine_client.types import Receipt
+    from spine_client.verify import verify_receipt
+
+    wal = WAL(signing_key, wal_config)
+    await wal.initialize()
+
+    r1 = await wal.append({"event": "test"})
+
+    # Create receipt with correct payload_hash but wrong event_id
+    wrong_receipt = Receipt(
+        event_id="evt_wrong_id",  # Wrong event_id
+        payload_hash=r1.payload_hash,  # Correct hash
+        server_time="2026-01-01T00:00:00Z",
+        server_seq=1,
+        receipt_sig="some_sig",
+        server_key_id="server-key",
+    )
+
+    r1_with_wrong_receipt = LocalRecord(
+        event_id=r1.event_id,
+        stream_id=r1.stream_id,
+        seq=r1.seq,
+        prev_hash=r1.prev_hash,
+        ts_client=r1.ts_client,
+        payload=r1.payload,
+        payload_hash=r1.payload_hash,
+        hash_alg=r1.hash_alg,
+        sig_client=r1.sig_client,
+        key_id=r1.key_id,
+        receipt=wrong_receipt,
+    )
+
+    server_key = SigningKey.generate(key_id="server-key").public_key()
+    result = verify_receipt(r1_with_wrong_receipt, server_key)
+
+    # Should fail - event_id mismatch is now detected explicitly
+    assert not result.valid
+    assert "event_id" in result.message.lower()
+
+
+# =============================================================================
+# Key Rotation Support
+# =============================================================================
+
+
+@pytest.mark.asyncio
+async def test_verify_chain_with_key_rotation(wal_config):
+    """Chain with multiple signing keys should verify when all keys provided."""
+    from spine_client.verify import verify_chain
+
+    # Create two different signing keys (simulating key rotation)
+    key_a = SigningKey.generate(key_id="key-a")
+    key_b = SigningKey.generate(key_id="key-b")
+
+    # First WAL session with key_a
+    wal1 = WAL(key_a, wal_config)
+    await wal1.initialize()
+    await wal1.append({"event": "first", "key": "a"})
+    await wal1.append({"event": "second", "key": "a"})
+
+    # Read records from first session
+    records = []
+    async for record in wal1.iter_records():
+        records.append(record)
+
+    # "Rotate" to key_b - create new records with different key
+    # In practice, you'd continue with the same WAL but different key
+    # Here we manually create records to simulate key rotation
+    from datetime import datetime, timezone
+    from spine_client.crypto import hash_payload, compute_entry_hash, timestamp_to_nanos
+
+    # Get last record's entry hash for chain continuity
+    last = records[-1]
+    ts_ns = timestamp_to_nanos(last.ts_client)
+    prev_hash, _ = compute_entry_hash(
+        seq=last.seq,
+        timestamp_ns=ts_ns,
+        prev_hash=last.prev_hash,
+        payload_hash=last.payload_hash,
+    )
+
+    # Create a record signed with key_b
+    payload = {"event": "third", "key": "b"}
+    payload_hash, hash_alg = hash_payload(payload)
+    ts_client = datetime.now(timezone.utc).isoformat()
+    ts_ns = timestamp_to_nanos(ts_client)
+    entry_hash, _ = compute_entry_hash(
+        seq=3,
+        timestamp_ns=ts_ns,
+        prev_hash=prev_hash,
+        payload_hash=payload_hash,
+    )
+    sig = key_b.sign_hex(entry_hash.encode("utf-8"))
+
+    record_b = LocalRecord(
+        event_id="evt_key_b_record",
+        stream_id=last.stream_id,
+        seq=3,
+        prev_hash=prev_hash,
+        ts_client=ts_client,
+        payload=payload,
+        payload_hash=payload_hash,
+        hash_alg=hash_alg,
+        sig_client=sig,
+        key_id=key_b.key_id,
+        public_key=key_b.public_key().to_bytes().hex(),
+    )
+
+    all_records = records + [record_b]
+
+    # Verify with both keys provided as a list
+    result_list = verify_chain(
+        all_records,
+        client_key=[key_a.public_key(), key_b.public_key()],
+    )
+    assert result_list.valid, f"List key provider failed: {result_list.details}"
+
+    # Verify with both keys provided as a dict
+    result_dict = verify_chain(
+        all_records,
+        client_key={
+            "key-a": key_a.public_key(),
+            "key-b": key_b.public_key(),
+        },
+    )
+    assert result_dict.valid, f"Dict key provider failed: {result_dict.details}"
+
+    # Verify fails if key_b is not provided
+    result_missing = verify_chain(
+        all_records,
+        client_key=key_a.public_key(),  # Only key_a
+    )
+    assert not result_missing.valid, "Should fail when rotated key is missing"
+    assert "key-b" in result_missing.details.get("errors", [{}])[0].get("error", "").lower()
+
+
+@pytest.mark.asyncio
+async def test_verify_wal_with_additional_keys(wal_config):
+    """verify_wal should accept additional_client_keys for key rotation."""
+    # Create initial WAL with key_a
+    key_a = SigningKey.generate(key_id="key-a")
+    wal = WAL(key_a, wal_config)
+    await wal.initialize()
+
+    await wal.append({"event": "with_key_a"})
+
+    # Verify with just the current key (should pass)
+    result = await verify_wal(wal)
+    assert result.valid
+
+    # Now verify with additional keys (still should pass)
+    key_b = SigningKey.generate(key_id="key-b")
+    result_with_extra = await verify_wal(wal, additional_client_keys=[key_b.public_key()])
+    assert result_with_extra.valid
+
+
+def test_verify_chain_key_provider_types():
+    """Test that all KeyProvider types work correctly."""
+    from spine_client.verify import verify_chain
+
+    key = SigningKey.generate(key_id="test-key")
+    pub = key.public_key()
+
+    # Empty list should pass for any key provider type
+    assert verify_chain([], pub).valid
+    assert verify_chain([], [pub]).valid
+    assert verify_chain([], {"test-key": pub}).valid

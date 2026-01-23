@@ -28,7 +28,7 @@ Usage:
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Union
 
 from .crypto import (
     HashAlgorithm,
@@ -51,6 +51,36 @@ logger = logging.getLogger(__name__)
 
 # Genesis hash for first record in a stream
 GENESIS_HASH = "0" * 64
+
+# Type for key provider: single key, list of keys, or dict mapping key_id to key
+# Supports key rotation scenarios where different records may be signed by different keys
+KeyProvider = Union[VerifyingKey, list[VerifyingKey], dict[str, VerifyingKey]]
+
+
+def _resolve_client_key(
+    provider: KeyProvider,
+    key_id: str,
+) -> VerifyingKey | None:
+    """
+    Resolve a client key from a provider by key_id.
+
+    Args:
+        provider: Single key, list of keys, or dict of key_id -> key
+        key_id: The key_id to look up
+
+    Returns:
+        VerifyingKey if found, None otherwise
+    """
+    if isinstance(provider, dict):
+        return provider.get(key_id)
+    elif isinstance(provider, list):
+        for key in provider:
+            if key.key_id == key_id:
+                return key
+        return None
+    else:
+        # Single key - return it if key_id matches, None otherwise
+        return provider if provider.key_id == key_id else None
 
 
 def verify_record_hash(record: LocalRecord) -> VerifyResult:
@@ -87,7 +117,7 @@ def verify_record_hash(record: LocalRecord) -> VerifyResult:
 
 def verify_record_signature(
     record: LocalRecord,
-    client_key: VerifyingKey,
+    client_key: KeyProvider,
 ) -> VerifyResult:
     """
     Verify a record's client signature.
@@ -97,16 +127,27 @@ def verify_record_signature(
 
     Args:
         record: LocalRecord to verify
-        client_key: Client's public key for verification
+        client_key: Client's public key(s) for verification.
+                   Can be a single key, list of keys, or dict mapping key_id to key.
+                   Supports key rotation - each record is verified with the key
+                   matching its key_id.
 
     Returns:
         VerifyResult
     """
-    if record.key_id != client_key.key_id:
+    # Resolve the key for this record's key_id
+    resolved_key = _resolve_client_key(client_key, record.key_id)
+    if resolved_key is None:
+        if isinstance(client_key, dict):
+            available = list(client_key.keys())
+        elif isinstance(client_key, list):
+            available = [k.key_id for k in client_key]
+        else:
+            available = [client_key.key_id]
         return VerifyResult.failure(
             VerifyStatus.INVALID_SIGNATURE,
-            f"Key ID mismatch: record has {record.key_id}, verifying with {client_key.key_id}",
-            details={"event_id": record.event_id}
+            f"No key found for key_id '{record.key_id}'. Available: {available}",
+            details={"event_id": record.event_id, "key_id": record.key_id}
         )
 
     # Compute entry hash (signature is over this, not just payload)
@@ -120,7 +161,7 @@ def verify_record_signature(
         algorithm=HashAlgorithm.BLAKE3,  # Always BLAKE3 for chain linking
     )
 
-    if not client_key.verify_hex(record.sig_client, entry_hash.encode('utf-8')):
+    if not resolved_key.verify_hex(record.sig_client, entry_hash.encode('utf-8')):
         return VerifyResult.failure(
             VerifyStatus.INVALID_SIGNATURE,
             "Client signature verification failed",
@@ -163,6 +204,17 @@ def verify_receipt(
             details={"event_id": record.event_id}
         )
 
+    # Check event_id match (defense in depth - also checked via signature)
+    if receipt.event_id != record.event_id:
+        return VerifyResult.failure(
+            VerifyStatus.INVALID_RECEIPT,
+            "Receipt event_id doesn't match record - possible receipt substitution attack",
+            details={
+                "record_event_id": record.event_id,
+                "receipt_event_id": receipt.event_id,
+            }
+        )
+
     if receipt.payload_hash != record.payload_hash:
         return VerifyResult.failure(
             VerifyStatus.INVALID_RECEIPT,
@@ -195,7 +247,7 @@ def verify_receipt(
 
 def verify_record(
     record: LocalRecord,
-    client_key: VerifyingKey,
+    client_key: KeyProvider,
     server_key: VerifyingKey | None = None,
 ) -> VerifyResult:
     """
@@ -208,7 +260,8 @@ def verify_record(
 
     Args:
         record: LocalRecord to verify
-        client_key: Client's public key
+        client_key: Client's public key(s) - single key, list, or dict.
+                   Supports key rotation scenarios.
         server_key: Server's public key (optional, for receipt verification)
 
     Returns:
@@ -247,7 +300,7 @@ def verify_record(
 
 def verify_chain(
     records: list[LocalRecord],
-    client_key: VerifyingKey,
+    client_key: KeyProvider,
     server_key: VerifyingKey | None = None,
     strict_timestamps: bool = True,
     strict_file_order: bool = False,
@@ -265,7 +318,11 @@ def verify_chain(
 
     Args:
         records: List of LocalRecord in sequence order
-        client_key: Client's public key
+        client_key: Client's public key(s) for signature verification.
+                   Supports key rotation:
+                   - Single VerifyingKey: all records must use this key
+                   - List[VerifyingKey]: looks up key by key_id
+                   - Dict[str, VerifyingKey]: maps key_id to key
         server_key: Server's public key (optional)
         strict_timestamps: If True, require timestamps to be monotonically increasing
         strict_file_order: If True, records must be in correct order as read from file
@@ -391,6 +448,7 @@ async def verify_wal(
     server_key: VerifyingKey | None = None,
     strict_timestamps: bool = True,
     strict_file_order: bool = False,
+    additional_client_keys: list[VerifyingKey] | None = None,
 ) -> VerifyResult:
     """
     Verify all records in a WAL.
@@ -401,18 +459,30 @@ async def verify_wal(
         strict_timestamps: If True, require timestamps to be monotonically increasing
         strict_file_order: If True, verify records in file order (forensic mode).
                           If False, sort by seq first (resilient mode, default).
+        additional_client_keys: Additional client keys for key rotation scenarios.
+                               The WAL's current signing key is always included.
+                               Pass previous keys here when verifying logs that
+                               span a key rotation.
 
     Returns:
         VerifyResult for entire WAL
     """
-    client_key = wal.signing_key.public_key()
+    # Build key provider with current key + any additional rotated keys
+    current_key = wal.signing_key.public_key()
+    if additional_client_keys:
+        client_keys: KeyProvider = {current_key.key_id: current_key}
+        for key in additional_client_keys:
+            client_keys[key.key_id] = key
+    else:
+        client_keys = current_key
+
     records = []
     async for record in wal.iter_records():
         records.append(record)
 
     return verify_chain(
         records,
-        client_key,
+        client_keys,
         server_key,
         strict_timestamps=strict_timestamps,
         strict_file_order=strict_file_order,
