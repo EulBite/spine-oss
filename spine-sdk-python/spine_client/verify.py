@@ -249,6 +249,8 @@ def verify_chain(
     records: list[LocalRecord],
     client_key: VerifyingKey,
     server_key: VerifyingKey | None = None,
+    strict_timestamps: bool = True,
+    strict_file_order: bool = False,
 ) -> VerifyResult:
     """
     Verify a chain of records.
@@ -256,12 +258,20 @@ def verify_chain(
     Checks:
     1. Each record individually (hash, signature, receipt)
     2. Chain integrity (prev_hash links via entry_hash)
-    3. Sequence monotonicity
+    3. Sequence monotonicity (no duplicates, no decreasing)
+    4. Sequence continuity (no gaps - seq 1,2,3 not 1,3)
+    5. Timestamp monotonicity (optional, enabled by default)
+    6. File order integrity (optional, for forensic use)
 
     Args:
         records: List of LocalRecord in sequence order
         client_key: Client's public key
         server_key: Server's public key (optional)
+        strict_timestamps: If True, require timestamps to be monotonically increasing
+        strict_file_order: If True, records must be in correct order as read from file
+                          (no sorting by seq - fails immediately if out of order).
+                          Use this for forensic verification where physical file order
+                          is evidence. Default False for resilience to async writes.
 
     Returns:
         VerifyResult with aggregate status
@@ -269,15 +279,20 @@ def verify_chain(
     if not records:
         return VerifyResult.success(details={"count": 0})
 
-    # Sort by sequence
-    sorted_records = sorted(records, key=lambda r: r.seq)
+    # In strict mode, don't sort - verify in file order
+    # In resilient mode, sort by seq to handle async/out-of-order writes
+    if strict_file_order:
+        ordered_records = records  # Preserve file order
+    else:
+        ordered_records = sorted(records, key=lambda r: r.seq)
 
     prev_entry_hash = GENESIS_HASH
     prev_seq = 0
+    prev_timestamp: str | None = None
     all_authoritative = True
     errors = []
 
-    for record in sorted_records:
+    for record in ordered_records:
         # Verify individual record
         result = verify_record(record, client_key, server_key)
         if not result.valid:
@@ -309,13 +324,36 @@ def verify_chain(
                 "got": record.prev_hash[:16] + "...",
             })
 
-        # Verify sequence monotonicity
+        # Verify sequence monotonicity (no duplicates or going backward)
         if record.seq <= prev_seq and prev_seq > 0:
+            error_msg = f"Sequence not monotonic: {record.seq} <= {prev_seq}"
+            if strict_file_order:
+                error_msg += " (strict file order: records out of order in file)"
             errors.append({
                 "event_id": record.event_id,
                 "seq": record.seq,
-                "error": f"Sequence not monotonic: {record.seq} <= {prev_seq}",
+                "error": error_msg,
             })
+
+        # Verify sequence continuity (no gaps)
+        if prev_seq > 0 and record.seq != prev_seq + 1:
+            errors.append({
+                "event_id": record.event_id,
+                "seq": record.seq,
+                "error": f"Sequence gap: expected {prev_seq + 1}, got {record.seq}",
+                "missing_range": f"{prev_seq + 1} to {record.seq - 1}",
+            })
+
+        # Verify timestamp monotonicity
+        if strict_timestamps and prev_timestamp is not None:
+            if record.ts_client < prev_timestamp:
+                errors.append({
+                    "event_id": record.event_id,
+                    "seq": record.seq,
+                    "error": "Timestamp not monotonic: current < previous",
+                    "current_ts": record.ts_client,
+                    "previous_ts": prev_timestamp,
+                })
 
         # Compute this record's entry_hash for next iteration's chain check
         # Entry hash always uses BLAKE3 for CLI compatibility
@@ -328,6 +366,7 @@ def verify_chain(
             algorithm=HashAlgorithm.BLAKE3,  # Always BLAKE3 for chain linking
         )
         prev_seq = record.seq
+        prev_timestamp = record.ts_client
 
     if errors:
         return VerifyResult.failure(
@@ -340,8 +379,8 @@ def verify_chain(
         is_authoritative=all_authoritative,
         details={
             "count": len(records),
-            "first_seq": sorted_records[0].seq,
-            "last_seq": sorted_records[-1].seq,
+            "first_seq": ordered_records[0].seq,
+            "last_seq": ordered_records[-1].seq,
             "all_have_receipts": all_authoritative,
         }
     )
@@ -350,6 +389,8 @@ def verify_chain(
 async def verify_wal(
     wal: WAL,
     server_key: VerifyingKey | None = None,
+    strict_timestamps: bool = True,
+    strict_file_order: bool = False,
 ) -> VerifyResult:
     """
     Verify all records in a WAL.
@@ -357,14 +398,22 @@ async def verify_wal(
     Args:
         wal: WAL instance to verify
         server_key: Server's public key (optional, for receipt verification)
+        strict_timestamps: If True, require timestamps to be monotonically increasing
+        strict_file_order: If True, verify records in file order (forensic mode).
+                          If False, sort by seq first (resilient mode, default).
 
     Returns:
         VerifyResult for entire WAL
     """
-
     client_key = wal.signing_key.public_key()
     records = []
     async for record in wal.iter_records():
         records.append(record)
 
-    return verify_chain(records, client_key, server_key)
+    return verify_chain(
+        records,
+        client_key,
+        server_key,
+        strict_timestamps=strict_timestamps,
+        strict_file_order=strict_file_order,
+    )
