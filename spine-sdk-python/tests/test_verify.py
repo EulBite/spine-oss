@@ -430,7 +430,7 @@ async def test_all_authoritative_requires_all_receipts(signing_key, wal_config):
     await wal.initialize()
 
     r1 = await wal.append({"event": "first"})
-    r2 = await wal.append({"event": "second"})
+    await wal.append({"event": "second"})
 
     # Simulate attaching receipt to only first record
     # (In real usage, this would come from server)
@@ -606,7 +606,8 @@ async def test_verify_chain_with_key_rotation(wal_config):
     # In practice, you'd continue with the same WAL but different key
     # Here we manually create records to simulate key rotation
     from datetime import datetime, timezone
-    from spine_client.crypto import hash_payload, compute_entry_hash, timestamp_to_nanos
+
+    from spine_client.crypto import compute_entry_hash, hash_payload, timestamp_to_nanos
 
     # Get last record's entry hash for chain continuity
     last = records[-1]
@@ -888,9 +889,10 @@ async def test_forged_rotation_record_rejected(wal_config):
 
     # Attacker creates a "rotation" record signed by their key, but claims key_id=key-a
     # This simulates modifying the key_id field of a record after signing
-    from spine_client.types import KeyRotationPayload
-    from spine_client.crypto import hash_payload, compute_entry_hash, timestamp_to_nanos
     from datetime import datetime, timezone
+
+    from spine_client.crypto import compute_entry_hash, hash_payload, timestamp_to_nanos
+    from spine_client.types import KeyRotationPayload
 
     malicious_rotation = KeyRotationPayload(
         new_key_id="attacker-key",

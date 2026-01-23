@@ -28,7 +28,7 @@ Usage:
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Union
+from typing import TYPE_CHECKING
 
 from .crypto import (
     HashAlgorithm,
@@ -55,7 +55,7 @@ GENESIS_HASH = "0" * 64
 
 # Type for key provider: single key, list of keys, or dict mapping key_id to key
 # Supports key rotation scenarios where different records may be signed by different keys
-KeyProvider = Union[VerifyingKey, list[VerifyingKey], dict[str, VerifyingKey]]
+KeyProvider = VerifyingKey | list[VerifyingKey] | dict[str, VerifyingKey]
 
 
 def _resolve_client_key(
@@ -527,8 +527,6 @@ def extract_key_chain(
     Returns:
         Dict mapping key_id to VerifyingKey for all authorized keys
     """
-    from .crypto import VerifyingKey as VK
-
     trusted_keys: dict[str, VerifyingKey] = {root_key.key_id: root_key}
 
     for record in records:
@@ -559,7 +557,7 @@ def extract_key_chain(
         try:
             rotation = KeyRotationPayload.from_dict(record.payload)
             new_key_bytes = bytes.fromhex(rotation.new_public_key)
-            new_key = VK.from_bytes(new_key_bytes, rotation.new_key_id)
+            new_key = VerifyingKey.from_bytes(new_key_bytes, rotation.new_key_id)
             trusted_keys[rotation.new_key_id] = new_key
             logger.debug(
                 f"Key rotation: {record.key_id} authorized {rotation.new_key_id} "
@@ -640,7 +638,7 @@ def verify_chain_with_root(
 
 
 async def verify_wal_with_root(
-    wal: "WAL",
+    wal: WAL,
     root_key: VerifyingKey,
     server_key: VerifyingKey | None = None,
     strict_timestamps: bool = True,
