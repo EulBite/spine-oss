@@ -397,3 +397,59 @@ async def test_resilient_mode_handles_async_writes(signing_key, wal_config):
 
     assert result_strict.valid
     assert result_resilient.valid
+
+
+# =============================================================================
+# Partial Authoritativeness
+# =============================================================================
+
+
+@pytest.mark.asyncio
+async def test_partial_authoritativeness(signing_key, wal_config):
+    """Chain with mixed receipts should report is_authoritative=False."""
+    wal = WAL(signing_key, wal_config)
+    await wal.initialize()
+
+    # Write records (none have receipts initially)
+    await wal.append({"event": "first"})
+    await wal.append({"event": "second"})
+    await wal.append({"event": "third"})
+
+    # Verify - should pass but not be authoritative
+    result = await verify_wal(wal)
+
+    assert result.valid
+    assert not result.is_authoritative, "No receipts = not authoritative"
+    assert result.details.get("all_have_receipts") is False
+
+
+@pytest.mark.asyncio
+async def test_all_authoritative_requires_all_receipts(signing_key, wal_config):
+    """is_authoritative should only be True when ALL records have valid receipts."""
+    wal = WAL(signing_key, wal_config)
+    await wal.initialize()
+
+    r1 = await wal.append({"event": "first"})
+    r2 = await wal.append({"event": "second"})
+
+    # Simulate attaching receipt to only first record
+    # (In real usage, this would come from server)
+    from spine_client.types import Receipt
+
+    fake_receipt = Receipt(
+        event_id=r1.event_id,
+        payload_hash=r1.payload_hash,
+        server_time="2026-01-01T00:00:00Z",
+        server_seq=1,
+        receipt_sig="fake_sig",  # Won't verify without real server key
+        server_key_id="server-key",
+    )
+    await wal.attach_receipt(r1.event_id, fake_receipt)
+
+    # Verify without server key (can't verify receipts)
+    result = await verify_wal(wal)
+
+    assert result.valid
+    # Even with one receipt attached, without server key to verify it,
+    # and with second record having no receipt, should not be authoritative
+    assert not result.is_authoritative
