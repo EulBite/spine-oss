@@ -415,3 +415,167 @@ async def test_payload_hash_deterministic(signing_key, wal_config):
     hash2, _ = hash_payload(payload2)
 
     assert hash1 == hash2, "Canonical JSON should normalize key order"
+
+
+# =============================================================================
+# Corruption and Attack Detection
+# =============================================================================
+
+
+@pytest.mark.asyncio
+async def test_partial_write_recovery(signing_key, wal_config):
+    """WAL should skip corrupted/incomplete JSON lines gracefully."""
+    wal = WAL(signing_key, wal_config)
+    await wal.initialize()
+
+    # Write valid records
+    r1 = await wal.append({"event": "first"})
+    r2 = await wal.append({"event": "second"})
+
+    # Simulate partial write (crash during write) by appending incomplete JSON
+    segments = list(wal.data_dir.glob("segment_*.jsonl"))
+    assert len(segments) > 0
+    with open(segments[0], "a") as f:
+        f.write('{"event": "incomplete_json_no_closing\n')  # Truncated JSON
+
+    # Create new WAL instance and recover
+    wal2 = WAL(signing_key, wal_config)
+    await wal2.initialize()
+
+    # Should recover valid records, skip corrupted line
+    records = []
+    async for record in wal2.iter_records():
+        records.append(record)
+
+    assert len(records) == 2
+    assert records[0].event_id == r1.event_id
+    assert records[1].event_id == r2.event_id
+
+
+@pytest.mark.asyncio
+async def test_reordering_attack_detection(signing_key, wal_config):
+    """Swapping two valid records should break the hash chain."""
+    import json as json_module
+
+    wal = WAL(signing_key, wal_config)
+    await wal.initialize()
+
+    # Write three records
+    await wal.append({"event": "first"})
+    await wal.append({"event": "second"})
+    await wal.append({"event": "third"})
+
+    # Read the segment file
+    segments = list(wal.data_dir.glob("segment_*.jsonl"))
+    with open(segments[0]) as f:
+        lines = f.readlines()
+
+    # Swap lines 1 and 2 (second and third records)
+    lines[1], lines[2] = lines[2], lines[1]
+
+    # Write back
+    with open(segments[0], "w") as f:
+        f.writelines(lines)
+
+    # Verify chain integrity manually
+    records = []
+    with open(segments[0]) as f:
+        for line in f:
+            if line.strip():
+                records.append(json_module.loads(line))
+
+    # After swapping, record at position 1 should have prev_hash
+    # that doesn't match the entry_hash of record at position 0
+    # This is the attack detection - the chain is broken
+    r0, r1 = records[0], records[1]
+
+    # Compute entry hash of r0
+    ts_ns = timestamp_to_nanos(r0["ts_client"])
+    r0_entry_hash, _ = compute_entry_hash(
+        seq=r0["seq"],
+        timestamp_ns=ts_ns,
+        prev_hash=r0["prev_hash"],
+        payload_hash=r0["payload_hash"],
+    )
+
+    # r1's prev_hash should NOT match r0's entry_hash after swap
+    # (because r1 was originally record 3, pointing to record 2)
+    assert r1["prev_hash"] != r0_entry_hash, "Reordering should break chain"
+
+
+@pytest.mark.asyncio
+async def test_recovery_preserves_chain_state(signing_key, wal_config):
+    """After recovery, prev_hash should match the last record's entry_hash."""
+    wal1 = WAL(signing_key, wal_config)
+    await wal1.initialize()
+
+    # Write records
+    await wal1.append({"event": "first"})
+    last = await wal1.append({"event": "second"})
+
+    # Compute last record's entry hash
+    ts_ns = timestamp_to_nanos(last.ts_client)
+    last_entry_hash, _ = compute_entry_hash(
+        seq=last.seq,
+        timestamp_ns=ts_ns,
+        prev_hash=last.prev_hash,
+        payload_hash=last.payload_hash,
+    )
+
+    # Restart
+    wal2 = WAL(signing_key, wal_config)
+    await wal2.initialize()
+
+    # Internal state should have correct prev_hash
+    assert wal2._prev_hash == last_entry_hash, "Recovered prev_hash must match last entry_hash"
+
+    # New record should chain correctly
+    new_record = await wal2.append({"event": "third"})
+    assert new_record.prev_hash == last_entry_hash
+
+
+@pytest.mark.asyncio
+async def test_empty_line_handling(signing_key, wal_config):
+    """WAL should handle empty lines in segment files."""
+    wal = WAL(signing_key, wal_config)
+    await wal.initialize()
+
+    await wal.append({"event": "first"})
+
+    # Inject empty lines
+    segments = list(wal.data_dir.glob("segment_*.jsonl"))
+    with open(segments[0], "a") as f:
+        f.write("\n\n\n")  # Empty lines
+
+    await wal.append({"event": "second"})
+
+    # Should still read both valid records
+    records = []
+    async for record in wal.iter_records():
+        records.append(record)
+
+    assert len(records) == 2
+
+
+@pytest.mark.asyncio
+async def test_whitespace_only_lines(signing_key, wal_config):
+    """WAL should handle whitespace-only lines."""
+    wal = WAL(signing_key, wal_config)
+    await wal.initialize()
+
+    await wal.append({"event": "test"})
+
+    # Inject whitespace lines
+    segments = list(wal.data_dir.glob("segment_*.jsonl"))
+    with open(segments[0], "a") as f:
+        f.write("   \n\t\n  \t  \n")
+
+    # Recover and read
+    wal2 = WAL(signing_key, wal_config)
+    await wal2.initialize()
+
+    records = []
+    async for record in wal2.iter_records():
+        records.append(record)
+
+    assert len(records) == 1
