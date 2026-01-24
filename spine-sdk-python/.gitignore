@@ -87,3 +87,6 @@ spine_wal/
 spine_fallback_wal/
 local_wal/
 audit_log/
+
+# Private benchmark (not for distribution)
+tests/benchmark_wal.py

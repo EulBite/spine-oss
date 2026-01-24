@@ -740,4 +740,196 @@ mod tests {
         let errors = validate_entry_hashes(&entry);
         assert_eq!(errors.len(), 2);
     }
+
+    // =========================================================================
+    // Cross-Language Test Vectors (from test-vectors/vectors.json)
+    // =========================================================================
+    //
+    // These tests ensure Rust CLI produces identical hashes to Python SDK.
+    // If these fail, cross-language WAL verification is broken!
+
+    /// Load test vectors from shared cross-language location
+    fn load_test_vectors() -> serde_json::Value {
+        let vectors_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("test-vectors")
+            .join("vectors.json");
+
+        let content = std::fs::read_to_string(&vectors_path).unwrap_or_else(|e| {
+            panic!("Failed to load test vectors from {:?}: {}", vectors_path, e)
+        });
+
+        serde_json::from_str(&content).expect("Failed to parse vectors.json")
+    }
+
+    #[test]
+    fn test_cross_language_entry_hash_genesis() {
+        let vectors = load_test_vectors();
+        let cases = vectors["entry_hash"]["cases"].as_array().unwrap();
+
+        let genesis = cases
+            .iter()
+            .find(|c| c["name"] == "genesis_entry")
+            .expect("genesis_entry case not found");
+
+        let entry = make_entry(
+            genesis["seq"].as_u64().unwrap(),
+            genesis["timestamp_ns"].as_i64().unwrap(),
+            genesis["prev_hash"].as_str().unwrap(),
+            genesis["payload_hash"].as_str().unwrap(),
+        );
+
+        let computed = compute_entry_hash(&entry);
+        let expected = genesis["expected_entry_hash"].as_str().unwrap();
+
+        assert_eq!(
+            computed, expected,
+            "Entry hash mismatch for genesis_entry:\n  Rust:   {}\n  Python: {}",
+            computed, expected
+        );
+    }
+
+    #[test]
+    fn test_cross_language_entry_hash_second() {
+        let vectors = load_test_vectors();
+        let cases = vectors["entry_hash"]["cases"].as_array().unwrap();
+
+        let second = cases
+            .iter()
+            .find(|c| c["name"] == "second_entry")
+            .expect("second_entry case not found");
+
+        let entry = make_entry(
+            second["seq"].as_u64().unwrap(),
+            second["timestamp_ns"].as_i64().unwrap(),
+            second["prev_hash"].as_str().unwrap(),
+            second["payload_hash"].as_str().unwrap(),
+        );
+
+        let computed = compute_entry_hash(&entry);
+        let expected = second["expected_entry_hash"].as_str().unwrap();
+
+        assert_eq!(
+            computed, expected,
+            "Entry hash mismatch for second_entry:\n  Rust:   {}\n  Python: {}",
+            computed, expected
+        );
+    }
+
+    #[test]
+    fn test_cross_language_signature_rfc8032_test1() {
+        use ed25519_dalek::{SecretKey, Signer, SigningKey, Verifier};
+
+        let vectors = load_test_vectors();
+        let cases = vectors["signature_verification"]["cases"]
+            .as_array()
+            .unwrap();
+
+        let case = cases
+            .iter()
+            .find(|c| c["name"] == "rfc8032_test1")
+            .expect("rfc8032_test1 case not found");
+
+        // Load keys
+        let private_bytes = hex::decode(case["private_key_hex"].as_str().unwrap()).unwrap();
+        let secret_key: SecretKey = private_bytes.as_slice().try_into().unwrap();
+        let signing_key = SigningKey::from_bytes(&secret_key);
+        let verifying_key = signing_key.verifying_key();
+
+        // Verify public key derivation
+        let expected_public = case["public_key_hex"].as_str().unwrap();
+        assert_eq!(
+            hex::encode(verifying_key.as_bytes()),
+            expected_public,
+            "Public key derivation mismatch"
+        );
+
+        // Sign message
+        let message = hex::decode(case["message_hex"].as_str().unwrap()).unwrap();
+        let signature = signing_key.sign(&message);
+
+        // Verify signature matches expected
+        let expected_sig = case["signature_hex"].as_str().unwrap();
+        assert_eq!(
+            hex::encode(signature.to_bytes()),
+            expected_sig,
+            "Signature mismatch for rfc8032_test1"
+        );
+
+        // Verify signature
+        assert!(
+            verifying_key.verify(&message, &signature).is_ok(),
+            "Signature verification failed"
+        );
+    }
+
+    #[test]
+    fn test_cross_language_signature_rfc8032_test2() {
+        use ed25519_dalek::{SecretKey, Signer, SigningKey, Verifier};
+
+        let vectors = load_test_vectors();
+        let cases = vectors["signature_verification"]["cases"]
+            .as_array()
+            .unwrap();
+
+        let case = cases
+            .iter()
+            .find(|c| c["name"] == "rfc8032_test2")
+            .expect("rfc8032_test2 case not found");
+
+        // Load keys
+        let private_bytes = hex::decode(case["private_key_hex"].as_str().unwrap()).unwrap();
+        let secret_key: SecretKey = private_bytes.as_slice().try_into().unwrap();
+        let signing_key = SigningKey::from_bytes(&secret_key);
+        let verifying_key = signing_key.verifying_key();
+
+        // Verify public key derivation
+        let expected_public = case["public_key_hex"].as_str().unwrap();
+        assert_eq!(
+            hex::encode(verifying_key.as_bytes()),
+            expected_public,
+            "Public key derivation mismatch"
+        );
+
+        // Sign message (0x72 = 'r')
+        let message = hex::decode(case["message_hex"].as_str().unwrap()).unwrap();
+        let signature = signing_key.sign(&message);
+
+        // Verify signature matches expected
+        let expected_sig = case["signature_hex"].as_str().unwrap();
+        assert_eq!(
+            hex::encode(signature.to_bytes()),
+            expected_sig,
+            "Signature mismatch for rfc8032_test2"
+        );
+
+        // Verify signature
+        assert!(
+            verifying_key.verify(&message, &signature).is_ok(),
+            "Signature verification failed"
+        );
+    }
+
+    #[test]
+    fn test_cross_language_hash_lengths() {
+        let vectors = load_test_vectors();
+        let lengths = &vectors["hash_lengths"];
+
+        assert_eq!(
+            lengths["hash_hex_chars"].as_u64().unwrap(),
+            64,
+            "hash_hex_chars mismatch"
+        );
+        assert_eq!(
+            lengths["sig_hex_chars"].as_u64().unwrap(),
+            128,
+            "sig_hex_chars mismatch"
+        );
+
+        // Verify our implementation matches
+        let entry = make_entry(1, 1000, GENESIS_PREV_HASH, GENESIS_PREV_HASH);
+        let hash = compute_entry_hash(&entry);
+        assert_eq!(hash.len(), 64, "Entry hash should be 64 hex chars");
+    }
 }
