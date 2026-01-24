@@ -398,8 +398,20 @@ class SpineClient:
             return self._circuit_breaker.state
         return None
 
+    # HTTP status codes for error classification
+    # Transient: retry later (server overload, network issues)
+    _TRANSIENT_STATUS_CODES = {429, 500, 502, 503, 504}
+    # Fatal: permanent failure, mark as dead letter (client error, invalid payload)
+    _FATAL_STATUS_CODES = {400, 401, 403, 413, 422}
+
     async def _sync_wal(self) -> None:
-        """Background task to sync WAL to Spine."""
+        """
+        Background task to sync WAL to Spine.
+
+        Error handling:
+        - Transient errors (5xx, 429, network): stop and retry later
+        - Fatal errors (4xx): mark as dead letter and continue with next record
+        """
         if not self._wal:
             return
 
@@ -408,6 +420,8 @@ class SpineClient:
         # Get unsynced records and send them to Spine
         unsynced = await self._wal.unsynced_records(limit=100)
         synced_count = 0
+        dead_count = 0
+
         for record in unsynced:
             try:
                 result = await self._send_request("POST", "/api/v1/events", record.payload)
@@ -421,11 +435,43 @@ class SpineClient:
                     )
                     await self._wal.attach_receipt(record.event_id, receipt)
                 synced_count += 1
-            except Exception as e:
-                logger.warning(f"Failed to sync event {record.event_id}: {e}")
-                break  # Stop on first failure to maintain order
 
-        logger.info(f"WAL sync complete: {synced_count}/{len(unsynced)} events synced")
+            except aiohttp.ClientResponseError as e:
+                if e.status in self._TRANSIENT_STATUS_CODES:
+                    # Transient error: stop and retry all later
+                    logger.warning(
+                        f"Transient error syncing {record.event_id}: {e.status} - will retry"
+                    )
+                    break
+                elif e.status in self._FATAL_STATUS_CODES:
+                    # Fatal error: mark as dead letter, continue with next
+                    logger.error(
+                        f"Fatal error syncing {record.event_id}: {e.status} - dead letter"
+                    )
+                    await self._wal.mark_dead(record.event_id, e.status, str(e.message))
+                    dead_count += 1
+                    continue
+                else:
+                    # Unknown error: treat as transient (safer)
+                    logger.warning(
+                        f"Unknown error syncing {record.event_id}: {e.status} - will retry"
+                    )
+                    break
+
+            except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+                # Network error: transient, stop and retry later
+                logger.warning(f"Network error syncing {record.event_id}: {e} - will retry")
+                break
+
+            except Exception as e:
+                # Unexpected error: log and stop to be safe
+                logger.error(f"Unexpected error syncing {record.event_id}: {e}")
+                break
+
+        logger.info(
+            f"WAL sync complete: {synced_count} synced, {dead_count} dead-lettered, "
+            f"{len(unsynced) - synced_count - dead_count} pending"
+        )
 
     async def get_stats(self) -> dict:
         """Get client statistics."""

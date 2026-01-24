@@ -579,3 +579,116 @@ async def test_whitespace_only_lines(signing_key, wal_config):
         records.append(record)
 
     assert len(records) == 1
+
+
+# =============================================================================
+# Dead Letter Queue (Poison Record Handling)
+# =============================================================================
+
+
+@pytest.mark.asyncio
+async def test_mark_dead_creates_file(signing_key, wal_config):
+    """mark_dead should create dead_letters.jsonl file."""
+    wal = WAL(signing_key, wal_config)
+    await wal.initialize()
+
+    record = await wal.append({"event": "will_fail"})
+    await wal.mark_dead(record.event_id, 400, "Schema validation failed")
+
+    assert wal._dead_letter_file.exists()
+
+
+@pytest.mark.asyncio
+async def test_mark_dead_excludes_from_unsynced(signing_key, wal_config):
+    """Dead-lettered records should be excluded from unsynced_records."""
+    wal = WAL(signing_key, wal_config)
+    await wal.initialize()
+
+    # Append 3 records
+    r1 = await wal.append({"event": "good1"})
+    r2 = await wal.append({"event": "poison"})
+    r3 = await wal.append({"event": "good2"})
+
+    # Initially all 3 are unsynced
+    unsynced = await wal.unsynced_records(limit=100)
+    assert len(unsynced) == 3
+
+    # Mark middle record as dead
+    await wal.mark_dead(r2.event_id, 400, "Invalid payload")
+
+    # Now only 2 should be unsynced
+    unsynced = await wal.unsynced_records(limit=100)
+    assert len(unsynced) == 2
+    event_ids = {r.event_id for r in unsynced}
+    assert r1.event_id in event_ids
+    assert r2.event_id not in event_ids  # Poison excluded
+    assert r3.event_id in event_ids
+
+
+@pytest.mark.asyncio
+async def test_mark_dead_excludes_from_count(signing_key, wal_config):
+    """Dead-lettered records should be excluded from unsynced_count."""
+    wal = WAL(signing_key, wal_config)
+    await wal.initialize()
+
+    await wal.append({"event": "good"})  # This one stays unsynced
+    poison = await wal.append({"event": "poison"})
+
+    assert await wal.unsynced_count() == 2
+
+    await wal.mark_dead(poison.event_id, 422, "Unprocessable entity")
+
+    assert await wal.unsynced_count() == 1
+
+
+@pytest.mark.asyncio
+async def test_dead_letter_count(signing_key, wal_config):
+    """dead_letter_count should return number of dead letters."""
+    wal = WAL(signing_key, wal_config)
+    await wal.initialize()
+
+    assert await wal.dead_letter_count() == 0
+
+    r1 = await wal.append({"event": "e1"})
+    r2 = await wal.append({"event": "e2"})
+
+    await wal.mark_dead(r1.event_id, 400, "Bad request")
+    assert await wal.dead_letter_count() == 1
+
+    await wal.mark_dead(r2.event_id, 401, "Unauthorized")
+    assert await wal.dead_letter_count() == 2
+
+
+@pytest.mark.asyncio
+async def test_dead_letter_persists_across_restart(signing_key, wal_config):
+    """Dead letter state should persist when WAL is reloaded."""
+    wal = WAL(signing_key, wal_config)
+    await wal.initialize()
+
+    good_record = await wal.append({"event": "good"})
+    poison_record = await wal.append({"event": "poison"})
+
+    await wal.mark_dead(poison_record.event_id, 400, "Invalid")
+
+    # Create new WAL instance (simulates restart)
+    wal2 = WAL(signing_key, wal_config)
+    await wal2.initialize()
+
+    # Dead letter should still be excluded
+    unsynced = await wal2.unsynced_records(limit=100)
+    assert len(unsynced) == 1
+    assert unsynced[0].event_id == good_record.event_id
+
+
+@pytest.mark.asyncio
+async def test_dead_letter_in_stats(signing_key, wal_config):
+    """get_stats should include dead_letter_count."""
+    wal = WAL(signing_key, wal_config)
+    await wal.initialize()
+
+    r1 = await wal.append({"event": "poison"})
+    await wal.mark_dead(r1.event_id, 400, "Bad request")
+
+    stats = await wal.get_stats()
+    assert "dead_letter_count" in stats
+    assert stats["dead_letter_count"] == 1

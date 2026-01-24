@@ -144,6 +144,11 @@ class WAL:
         return self.data_dir / "receipts.jsonl"
 
     @property
+    def _dead_letter_file(self) -> Path:
+        """Path to the dead letter log file (poison records)."""
+        return self.data_dir / "dead_letters.jsonl"
+
+    @property
     def _state_file(self) -> Path:
         """Path to the chain state file."""
         return self.data_dir / "chain_state.json"
@@ -556,6 +561,70 @@ class WAL:
 
         return synced_ids
 
+    async def _load_dead_letter_ids(self) -> set[str]:
+        """
+        Load only event IDs that are dead-lettered (memory-efficient).
+
+        Returns:
+            Set of dead-lettered event IDs
+        """
+        dead_ids: set[str] = set()
+        if not self._dead_letter_file.exists():
+            return dead_ids
+
+        try:
+            async with aiofiles.open(self._dead_letter_file) as f:
+                async for line in f:
+                    if line.strip():
+                        try:
+                            entry = json.loads(line)
+                            dead_ids.add(entry["event_id"])
+                        except (json.JSONDecodeError, KeyError):
+                            continue
+        except Exception as e:
+            logger.warning(f"Error loading dead letter IDs: {e}")
+
+        return dead_ids
+
+    async def mark_dead(self, event_id: str, code: int, reason: str) -> None:
+        """
+        Mark an event as permanently failed (dead letter).
+
+        Called when the server rejects an event with a fatal error (4xx).
+        Dead-lettered events are excluded from future sync attempts.
+
+        Args:
+            event_id: ID of the event
+            code: HTTP status code that caused the failure
+            reason: Error message from the server
+        """
+        await self.initialize()
+
+        entry = {
+            "event_id": event_id,
+            "failure_ts": datetime.now(timezone.utc).isoformat(),
+            "code": code,
+            "reason": reason,
+        }
+
+        async with self._lock:
+            async with aiofiles.open(self._dead_letter_file, "a") as f:
+                await f.write(json.dumps(entry) + "\n")
+
+        logger.warning(
+            f"Event {event_id} marked as dead letter: {code} - {reason}"
+        )
+
+    async def dead_letter_count(self) -> int:
+        """
+        Count dead-lettered events.
+
+        Returns:
+            Number of dead-lettered events
+        """
+        dead_ids = await self._load_dead_letter_ids()
+        return len(dead_ids)
+
     async def unsynced_records(self, limit: int) -> list[LocalRecord]:
         """
         Get a batch of records without server receipts.
@@ -582,6 +651,7 @@ class WAL:
         await self.initialize()
 
         synced_ids = await self._load_synced_event_ids()
+        dead_ids = await self._load_dead_letter_ids()
         unsynced = []
         segments = sorted(self.data_dir.glob("segment_*.jsonl"))
 
@@ -596,7 +666,12 @@ class WAL:
                             try:
                                 record = LocalRecord.from_dict(json.loads(line))
                                 if record.stream_id == self.stream_id:
-                                    if record.event_id not in synced_ids:
+                                    # Skip synced and dead-lettered records
+                                    is_pending = (
+                                        record.event_id not in synced_ids
+                                        and record.event_id not in dead_ids
+                                    )
+                                    if is_pending:
                                         unsynced.append(record)
                                         if len(unsynced) >= limit:
                                             break
@@ -609,17 +684,18 @@ class WAL:
 
     async def unsynced_count(self) -> int:
         """
-        Count records without server receipts.
+        Count records without server receipts (excludes dead letters).
 
         This scans all segments but only counts, doesn't load full records.
         Use this to check if there's a backlog before/after processing.
 
         Returns:
-            Number of unsynced records
+            Number of unsynced records (excluding dead letters)
         """
         await self.initialize()
 
         synced_ids = await self._load_synced_event_ids()
+        dead_ids = await self._load_dead_letter_ids()
         count = 0
 
         segments = sorted(self.data_dir.glob("segment_*.jsonl"))
@@ -631,7 +707,8 @@ class WAL:
                             try:
                                 data = json.loads(line)
                                 if data.get("stream_id") == self.stream_id:
-                                    if data.get("event_id") not in synced_ids:
+                                    event_id = data.get("event_id")
+                                    if event_id not in synced_ids and event_id not in dead_ids:
                                         count += 1
                             except json.JSONDecodeError:
                                 continue
@@ -725,6 +802,7 @@ class WAL:
             "total_size_bytes": total_size,
             "receipts_count": len(receipts),
             "unsynced_count": await self.unsynced_count(),
+            "dead_letter_count": await self.dead_letter_count(),
             "data_dir": str(self.data_dir),
             "retention_hours": self.config.retention_hours,
         }
