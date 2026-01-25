@@ -1,0 +1,12 @@
+# Generated keys (NEVER commit these)
+*.key
+signing.key
+demo_signing.key
+
+# Generated WAL directories
+audit_log/
+demo_audit_log/
+
+# Python cache
+__pycache__/
+*.pyc
