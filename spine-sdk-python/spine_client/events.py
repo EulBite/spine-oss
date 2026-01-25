@@ -66,13 +66,29 @@ class AuditEvent:
 
     Attributes:
         event_type: Classification (e.g., "auth.login", "data.export")
-        payload: Arbitrary event data
+        payload: Arbitrary event data (no floats - use int or str instead)
         actor: Entity performing the action
         resource: Resource being accessed
         severity: Event severity level
         source: Originating system/service
         timestamp: Event timestamp (auto-generated if not provided)
         idempotency_key: For deduplication (auto-generated if not provided)
+
+    Idempotency Key:
+        By default, a random UUID is generated. For deduplication across retries
+        or process restarts, provide a deterministic key derived from the event
+        content, e.g.:
+
+            key = f"{event_type}:{actor_id}:{timestamp}:{payload_hash}"
+
+        This ensures the same logical event gets the same key even if the
+        process crashes and retries.
+
+    Payload Restrictions:
+        Payloads are validated using the same rules as canonical_json():
+        - Float values are REJECTED (use int or str instead)
+        - Unicode strings are NFC-normalized
+        This ensures consistent hashing/signing across implementations.
 
     Example:
         event = AuditEvent(
@@ -131,21 +147,60 @@ class AuditEvent:
         return result
 
     def _validate_payload(self) -> None:
-        """Validate that payload is JSON-serializable.
+        """Validate payload using the same rules as canonical_json.
+
+        This ensures consistency with the cryptographic signing contract:
+        - Float values are rejected (RFC8785 canonicalization issues)
+        - Unicode strings are NFC-normalized
+        - All values must be JSON-serializable
 
         Raises:
+            TypeError: If payload contains float values
             ValueError: If payload contains non-serializable values
         """
-        import json
+        # Import with fallback for different execution contexts
         try:
-            json.dumps(self.payload)
-        except (TypeError, ValueError) as e:
+            from .crypto import canonical_json
+        except ImportError:
+            from spine_client.crypto import canonical_json
+
+        try:
+            # Use canonical_json for validation - same rules as signing
+            canonical_json(self.payload)
+        except TypeError as e:
+            # Re-raise TypeError (float rejection) with clear context
+            raise TypeError(
+                f"Payload validation failed: {e}. "
+                f"Audit event payloads must not contain float values."
+            ) from e
+        except ValueError as e:
+            # JSON encoding errors (non-serializable types)
             raise ValueError(
                 f"Payload contains non-JSON-serializable values: {e}. "
-                f"Use default=str or convert values before creating AuditEvent."
+                f"Convert values to JSON types (str/int/bool/list/dict/None) "
+                f"before creating AuditEvent."
             ) from e
 
     def to_json(self) -> str:
-        """Serialize to JSON string."""
+        """Serialize to JSON string (for debugging/logging).
+
+        Uses deterministic settings for stability:
+        - Sorted keys
+        - No extra whitespace
+        - UTF-8 characters preserved (not ASCII-escaped)
+
+        Note:
+            For cryptographic signing or hashing, use crypto.canonical_json()
+            instead. This method is for human-readable output and logging,
+            not for producing bytes to sign.
+
+        Returns:
+            JSON string representation of the event
+        """
         import json
-        return json.dumps(self.to_dict())
+        return json.dumps(
+            self.to_dict(),
+            sort_keys=True,
+            separators=(',', ':'),
+            ensure_ascii=False,
+        )

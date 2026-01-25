@@ -16,6 +16,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **AuditSidecar: try_emit() + block policy** - Now returns `False` immediately instead of breaking semaphore accounting
 - **AuditSidecar: max_backoff_ms ignored** - Retry backoff now capped at `max_backoff_ms`
 - **AuditSidecar: enable_local_wal contradiction** - Set `enable_local_wal=False` to match "in-memory only" documentation
+- **SpineClient: urljoin path eating** - Added `_build_url()` method to handle base URLs with paths correctly (e.g., `http://host/spine/api`)
+- **SpineClient: WAL sync infinite loop** - Records now marked as synced with synthetic receipt when server doesn't return one
+- **SpineClient: Task leak on shutdown** - `__aexit__` now awaits cancelled tasks with `asyncio.gather(..., return_exceptions=True)`
+- **SpineClient: max_retries unused** - Now implements exponential backoff retry in `_send_request()`
+- **canonical_json: Float values** - Now rejects floats with `TypeError` (RFC8785 canonicalization not guaranteed by Python)
+- **SigningKey.from_env: Fragile base64 detection** - Removed length heuristics, uses `base64.b64decode(validate=True)` with try/except
 
 ### Added
 
@@ -23,10 +29,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **AuditSidecar: overflow_policy validation** - Invalid policies now raise `ValueError` immediately
 - **AuditSidecar: Enhanced is_healthy** - Detects stale sends (>60s) and failed startup (>30s grace period)
 - **AuditSidecar: Client None guard** - `_sender_loop()` handles edge case where `_client` is None
+- **SpineClient: connect_timeout_ms** - Separate connection establishment timeout in `ClientConfig`
+- **SpineClient: Key persistence warning** - Logs warning with guidance when auto-generating signing key
+- **SpineClient: log_async() error** - Clear error message when called without running event loop
+- **AuditEvent: Payload validation** - Uses `canonical_json()` for consistent validation (rejects floats, NFC normalization)
+- **AuditEvent: Idempotency key guidance** - Docstring explains deterministic keys for dedup across retries
 
 ### Changed
 
 - **AuditSidecar documentation** - Clarified timing guarantees (best-effort), block policy caveats, thread safety notes
+- **SigningKey.from_bytes → from_seed_bytes** - Renamed for BYOK clarity (accepts 32-byte seed, not expanded key)
+- **AuditEvent.to_json()** - Now uses deterministic settings (`sort_keys=True`, `separators`, `ensure_ascii=False`)
+- **crypto.py architecture note** - Documented future refactor for Receipt verification with server key
 
 ## [0.4.0] - 2026-01-24
 

@@ -13,6 +13,17 @@ Provides:
 Security model:
 - Client signatures = "integrity claim" (proves client created the event)
 - Server receipts = "authoritative proof" (proves system of record accepted it)
+
+Architecture note (Future refactor):
+    Currently, this module only provides client-side signing (SigningKey/VerifyingKey).
+    Server receipts are treated as opaque data in types.Receipt.
+
+    When server receipt verification is needed, consider:
+    - ServerVerifyingKey class (loads server's public key)
+    - Receipt.verify(server_key) method
+    - Separation of "client signature" vs "server attestation" in type system
+
+    For now, receipt verification is deferred to server-side or CLI tooling.
 """
 
 import base64
@@ -48,7 +59,8 @@ except ImportError:
 # Canonical JSON
 # =============================================================================
 
-JsonValue = dict | list | str | int | float | bool | None
+# Note: float intentionally excluded - see canonical_json() docstring for rationale
+JsonValue = dict | list | str | int | bool | None
 
 
 def _normalize_unicode(obj: JsonValue) -> JsonValue:
@@ -60,11 +72,16 @@ def _normalize_unicode(obj: JsonValue) -> JsonValue:
     - "café" (e + combining acute U+0065 U+0301)
     Both normalize to the composed form (NFC).
 
+    Also rejects float values to ensure cross-implementation compatibility.
+
     Args:
         obj: JSON-serializable object
 
     Returns:
         Object with all strings NFC-normalized
+
+    Raises:
+        TypeError: If obj contains float values (not supported for audit logs)
     """
     if isinstance(obj, str):
         return unicodedata.normalize('NFC', obj)
@@ -75,11 +92,20 @@ def _normalize_unicode(obj: JsonValue) -> JsonValue:
         }
     elif isinstance(obj, list):
         return [_normalize_unicode(item) for item in obj]
+    elif isinstance(obj, float):
+        # RFC8785 requires specific float canonicalization (no 1.0, no 1e3, no -0).
+        # Python's json.dumps does NOT guarantee this (e.g., 1.0 → "1.0" but RFC wants "1").
+        # Floats in audit logs are also semantically questionable (precision drift).
+        # Reject floats entirely - use int, str, or Decimal (as string) instead.
+        raise TypeError(
+            f"Float values not allowed in canonical JSON for audit logs. "
+            f"Got: {obj}. Use int, str, or Decimal (serialized as string) instead."
+        )
     else:
         return obj
 
 
-def canonical_json(obj: dict | list | str | int | float | bool | None) -> bytes:
+def canonical_json(obj: dict | list | str | int | bool | None) -> bytes:
     """
     Serialize object to canonical JSON (deterministic byte representation).
 
@@ -87,21 +113,35 @@ def canonical_json(obj: dict | list | str | int | float | bool | None) -> bytes:
     - Unicode NFC normalization (ensures equivalent strings produce same bytes)
     - Keys sorted lexicographically (Unicode code points)
     - No whitespace
-    - Numbers: no unnecessary leading zeros, no trailing zeros after decimal
     - Strings: minimal escaping (only required chars)
     - UTF-8 encoded output
+    - **Float values are rejected** (see below)
+
+    Float Rejection:
+        RFC 8785 requires specific float canonicalization (no "1.0", no "1e3",
+        no "-0"), but Python's json.dumps does NOT guarantee this. Example:
+            Python: 1.0 → "1.0"
+            RFC8785: 1.0 → "1"
+
+        This breaks cross-implementation verification. Additionally, floats in
+        audit logs are semantically questionable (precision drift across
+        languages/platforms). Use int, str, or Decimal (as string) instead.
 
     Args:
-        obj: JSON-serializable object
+        obj: JSON-serializable object (no floats)
 
     Returns:
         Canonical JSON as UTF-8 bytes
+
+    Raises:
+        TypeError: If obj contains float values
 
     Example:
         >>> canonical_json({"b": 1, "a": 2})
         b'{"a":2,"b":1}'
         >>> canonical_json({"café": 1}) == canonical_json({"cafe\u0301": 1})  # NFC normalization
         True
+        >>> canonical_json({"x": 1.0})  # Raises TypeError
     """
     # Apply Unicode NFC normalization before serialization
     normalized = _normalize_unicode(obj)
@@ -211,21 +251,41 @@ class SigningKey:
         )
 
     @classmethod
-    def from_bytes(cls, private_bytes: bytes, key_id: str) -> "SigningKey":
+    def from_seed_bytes(cls, seed: bytes, key_id: str) -> "SigningKey":
         """
-        Load signing key from raw bytes (32 bytes).
+        Load signing key from a 32-byte Ed25519 seed.
+
+        IMPORTANT: Ed25519 "private key" terminology is confusing:
+        - The 32-byte value you provide is the SEED
+        - cryptography library internally expands this to 64 bytes (via SHA-512)
+        - The actual signing uses the expanded key, not the seed directly
+
+        This method accepts raw seed bytes (e.g., from `os.urandom(32)` or
+        another key derivation). The cryptography library handles the Ed25519
+        key expansion internally.
+
+        For BYOK (Bring Your Own Key):
+        - If you have a 32-byte seed from another system, use this method
+        - If you have a PEM file, use `from_pem()`
+        - If you want to generate a new key, use `generate()`
 
         Args:
-            private_bytes: 32-byte Ed25519 seed
-            key_id: Key identifier
+            seed: 32-byte Ed25519 seed (NOT the expanded 64-byte key)
+            key_id: Key identifier for tracking/rotation
 
         Returns:
             SigningKey instance
+
+        Raises:
+            ValueError: If seed is not exactly 32 bytes
         """
         if not HAS_CRYPTOGRAPHY:
             raise RuntimeError("cryptography library required for Ed25519 signing")
 
-        private_key = Ed25519PrivateKey.from_private_bytes(private_bytes)
+        if len(seed) != 32:
+            raise ValueError(f"Ed25519 seed must be exactly 32 bytes, got {len(seed)}")
+
+        private_key = Ed25519PrivateKey.from_private_bytes(seed)
 
         return cls(
             key_id=key_id,
@@ -306,31 +366,35 @@ class SigningKey:
 
         key_data = key_data.strip()
 
-        # Detect format and load
+        # Detect format and load (order: PEM → hex → base64)
         if key_data.startswith("-----BEGIN"):
             # PEM format
             return cls.from_pem(key_data.encode("utf-8"), key_id)
-        elif len(key_data) == 64:
-            # Hex format (32 bytes = 64 hex chars)
+
+        # Try hex (64 chars = 32 bytes)
+        if len(key_data) == 64:
             try:
                 key_bytes = bytes.fromhex(key_data)
-                return cls.from_bytes(key_bytes, key_id)
-            except ValueError as e:
-                raise ValueError(f"Invalid hex key in {env_var}: {e}") from e
-        elif len(key_data) == 44 and key_data.endswith("="):
-            # Base64 format (32 bytes = 44 base64 chars with padding)
-            try:
-                key_bytes = base64.b64decode(key_data)
-                if len(key_bytes) != 32:
-                    raise ValueError(f"Base64 key must decode to 32 bytes, got {len(key_bytes)}")
-                return cls.from_bytes(key_bytes, key_id)
-            except Exception as e:
-                raise ValueError(f"Invalid base64 key in {env_var}: {e}") from e
-        else:
-            raise ValueError(
-                f"Unrecognized key format in {env_var}. "
-                f"Expected: 64-char hex, 44-char base64, or PEM. Got {len(key_data)} chars."
-            )
+                return cls.from_seed_bytes(key_bytes, key_id)
+            except ValueError:
+                pass  # Not valid hex, try base64
+
+        # Try base64 (handles with/without padding, with/without whitespace)
+        # Don't use length heuristics - just try to decode and check result
+        try:
+            # validate=True rejects invalid chars (stricter than default)
+            key_bytes = base64.b64decode(key_data, validate=True)
+            if len(key_bytes) == 32:
+                return cls.from_seed_bytes(key_bytes, key_id)
+            # Decoded but wrong length - fall through to error
+        except Exception:
+            pass  # Not valid base64
+
+        raise ValueError(
+            f"Unrecognized key format in {env_var}. "
+            f"Expected: PEM, 64-char hex, or base64 (decoding to 32 bytes). "
+            f"Got {len(key_data)} chars that don't match any format."
+        )
 
     @classmethod
     def from_file(
@@ -380,14 +444,14 @@ class SigningKey:
             # PEM format
             return cls.from_pem(content, key_id)
         elif len(content) == 32:
-            # Raw 32-byte key
-            return cls.from_bytes(content, key_id)
+            # Raw 32-byte seed
+            return cls.from_seed_bytes(content, key_id)
         elif len(content) in (64, 65):  # 64 hex chars, optionally with newline
             # Hex format
             try:
                 hex_str = content.decode("utf-8").strip()
                 key_bytes = bytes.fromhex(hex_str)
-                return cls.from_bytes(key_bytes, key_id)
+                return cls.from_seed_bytes(key_bytes, key_id)
             except (UnicodeDecodeError, ValueError) as e:
                 raise ValueError(f"Invalid hex key file {path}: {e}") from e
         else:

@@ -104,7 +104,7 @@ async def get_or_create_key(key_file: str | None, wal_dir: str) -> SigningKey:
             key_id = key_id_path.read_text().strip()
         else:
             key_id = f"kid_{seed[:8].hex()}"
-        key = SigningKey.from_bytes(seed, key_id)
+        key = SigningKey.from_seed_bytes(seed, key_id)
         print(f"Loaded key: {key.key_id}")
     else:
         key = SigningKey.generate()

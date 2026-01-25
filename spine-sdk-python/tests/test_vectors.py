@@ -345,7 +345,7 @@ class TestSignatureVerification:
     def test_rfc8032_vectors(self, case):
         """Ed25519 signatures must match RFC 8032 test vectors."""
         # Load keys
-        private_key = SigningKey.from_bytes(
+        private_key = SigningKey.from_seed_bytes(
             bytes.fromhex(case["private_key_hex"]),
             key_id="test",
         )

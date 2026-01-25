@@ -35,6 +35,7 @@ class ClientConfig:
     # API settings
     base_url: str
     timeout_ms: int = 5000
+    connect_timeout_ms: int = 2000  # Connection establishment timeout
     max_retries: int = 3
 
     # Authentication settings
@@ -66,6 +67,7 @@ class SpineClient:
     - Fire-and-forget mode for non-blocking operations
     - Batch support for high throughput
     - Connection pooling via aiohttp
+    - Automatic retry for transient errors (5xx, 429, network)
 
     Usage:
         async with SpineClient("http://spine:3000") as client:
@@ -84,6 +86,24 @@ class SpineClient:
             # Check health
             if await client.is_healthy():
                 print("Spine is up")
+
+    Signing Key Persistence (IMPORTANT):
+        When WAL fallback is enabled, a signing key is required for cryptographic
+        integrity. If not provided, a key is auto-generated on each run.
+
+        WARNING: Auto-generated keys change on every restart, which breaks
+        forensic continuity. For production use:
+
+        1. Generate a key once and persist it:
+           key = SigningKey.generate()
+           key.save("./spine_key.pem")
+
+        2. Load it on startup:
+           key = SigningKey.load("./spine_key.pem")
+           async with SpineClient(url, signing_key=key) as client:
+               ...
+
+        See docs/KEY_MANAGEMENT.md for key rotation and revocation procedures.
     """
 
     def __init__(
@@ -154,7 +174,7 @@ class SpineClient:
         if self._session is None or self._session.closed:
             timeout = aiohttp.ClientTimeout(
                 total=self.config.timeout_ms / 1000,
-                connect=2.0,
+                connect=self.config.connect_timeout_ms / 1000,
             )
             # Build headers with optional API key authentication
             headers = {"Accept": "application/json"}
@@ -180,7 +200,11 @@ class SpineClient:
         if self._enable_wal_fallback:
             if self._signing_key is None:
                 self._signing_key = SigningKey.generate()
-                logger.info(f"Auto-generated signing key: {self._signing_key.key_id}")
+                logger.warning(
+                    f"Auto-generated signing key: {self._signing_key.key_id}. "
+                    "For production, persist the key to maintain forensic continuity across restarts. "
+                    "See SpineClient docstring or docs/KEY_MANAGEMENT.md."
+                )
 
             wal_config = WALConfig(data_dir=self._wal_dir)
             self._wal = WAL(self._signing_key, wal_config, namespace="spine-client-fallback")
@@ -190,9 +214,15 @@ class SpineClient:
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         """Context manager exit - cleanup resources."""
-        # Cancel background tasks
-        for task in self._background_tasks:
-            task.cancel()
+        # Cancel background tasks and wait for them to finish
+        # Without awaiting, we get "Task was destroyed but it is pending" warnings
+        # and potential resource leaks (e.g., session closing while request in flight)
+        if self._background_tasks:
+            for task in self._background_tasks:
+                task.cancel()
+            # Wait for all tasks to complete (with exceptions suppressed)
+            await asyncio.gather(*self._background_tasks, return_exceptions=True)
+            self._background_tasks.clear()
 
         # Close session
         if self._session and not self._session.closed:
@@ -204,6 +234,22 @@ class SpineClient:
         """Explicitly close the client."""
         await self.__aexit__(None, None, None)
 
+    def _build_url(self, path: str) -> str:
+        """
+        Build full URL from base_url and path.
+
+        Handles the urljoin trap: urljoin("http://host/spine", "/api/v1/events")
+        would return "http://host/api/v1/events" (losing /spine).
+
+        This method ensures the base path is preserved.
+        """
+        # Ensure base_url ends with / for proper joining
+        base = self.config.base_url
+        if not base.endswith("/"):
+            base += "/"
+        # Remove leading / from path to avoid urljoin treating it as absolute
+        return urljoin(base, path.lstrip("/"))
+
     async def _send_request(
         self,
         method: str,
@@ -211,20 +257,64 @@ class SpineClient:
         json_data: dict | None = None,
         extra_headers: dict | None = None,
     ) -> dict:
-        """Send HTTP request to Spine."""
-        session = await self._get_session()
-        url = urljoin(self.config.base_url, path)
+        """
+        Send HTTP request to Spine with retry for transient errors.
 
-        async with session.request(method, url, json=json_data, headers=extra_headers) as response:
-            if response.status >= 400:
-                text = await response.text()
-                raise aiohttp.ClientResponseError(
-                    response.request_info,
-                    response.history,
-                    status=response.status,
-                    message=text,
-                )
-            return await response.json()
+        Retries on:
+        - 429 (Too Many Requests)
+        - 500, 502, 503, 504 (Server errors)
+        - Network/timeout errors
+
+        Does NOT retry on:
+        - 4xx client errors (except 429)
+        """
+        session = await self._get_session()
+        url = self._build_url(path)
+
+        last_error: Exception | None = None
+
+        for attempt in range(self.config.max_retries):
+            try:
+                async with session.request(
+                    method, url, json=json_data, headers=extra_headers
+                ) as response:
+                    if response.status >= 400:
+                        text = await response.text()
+                        error = aiohttp.ClientResponseError(
+                            response.request_info,
+                            response.history,
+                            status=response.status,
+                            message=text,
+                        )
+                        # Only retry transient errors
+                        if response.status in self._TRANSIENT_STATUS_CODES:
+                            last_error = error
+                            if attempt < self.config.max_retries - 1:
+                                backoff = min(0.1 * (2 ** attempt), 2.0)  # 0.1s, 0.2s, 0.4s... max 2s
+                                logger.warning(
+                                    f"Transient error {response.status}, "
+                                    f"retry {attempt + 1}/{self.config.max_retries} in {backoff}s"
+                                )
+                                await asyncio.sleep(backoff)
+                                continue
+                        raise error
+                    return await response.json()
+
+            except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+                last_error = e
+                if attempt < self.config.max_retries - 1:
+                    backoff = min(0.1 * (2 ** attempt), 2.0)
+                    logger.warning(
+                        f"Network error: {e}, retry {attempt + 1}/{self.config.max_retries} in {backoff}s"
+                    )
+                    await asyncio.sleep(backoff)
+                    continue
+                raise
+
+        # All retries exhausted
+        if last_error:
+            raise last_error
+        raise RuntimeError("Unexpected: no error but retries exhausted")
 
     async def log(self, event: AuditEvent) -> SpineResponse:
         """
@@ -303,8 +393,26 @@ class SpineClient:
 
         Args:
             event: AuditEvent to log
+
+        Raises:
+            RuntimeError: If called outside of an async context (no running event loop)
+
+        Note:
+            This method must be called from within an async context (inside an
+            async function or while an event loop is running). For sync contexts,
+            use `asyncio.run(client.log(event))` instead.
         """
-        task = asyncio.create_task(self._log_async_impl(event))
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            raise RuntimeError(
+                "log_async() must be called from within an async context. "
+                "No running event loop detected. Use 'await client.log(event)' "
+                "inside an async function, or 'asyncio.run(client.log(event))' "
+                "from sync code."
+            )
+
+        task = loop.create_task(self._log_async_impl(event))
         self._background_tasks.append(task)
 
         def _remove_task(t: asyncio.Task) -> None:
@@ -386,7 +494,7 @@ class SpineClient:
         """
         try:
             session = await self._get_session()
-            url = urljoin(self.config.base_url, "/health")
+            url = self._build_url("health")
             async with session.get(url) as response:
                 return response.status == 200
         except Exception:
@@ -425,15 +533,28 @@ class SpineClient:
         for record in unsynced:
             try:
                 result = await self._send_request("POST", "/api/v1/events", record.payload)
-                # Attach receipt if server provides one
+
+                # Mark as synced: attach receipt (server-provided or synthetic)
+                # Without this, records would be re-sent on every sync cycle
+                from .types import Receipt
+                from datetime import datetime, timezone
+
                 if "receipt" in result:
-                    from .types import Receipt
                     receipt = Receipt(
                         server_ts=result["receipt"].get("server_ts", ""),
                         server_seq=result["receipt"].get("server_seq", 0),
                         server_sig=result["receipt"].get("server_sig", ""),
                     )
-                    await self._wal.attach_receipt(record.event_id, receipt)
+                else:
+                    # Server didn't return receipt - create synthetic one to mark synced
+                    # This prevents infinite re-sync loops
+                    # "SYNTHETIC" marker makes it clear this is not a server attestation
+                    receipt = Receipt(
+                        server_ts=datetime.now(timezone.utc).isoformat(),
+                        server_seq=result.get("sequence", 0),
+                        server_sig="SYNTHETIC:no_server_receipt",
+                    )
+                await self._wal.attach_receipt(record.event_id, receipt)
                 synced_count += 1
 
             except aiohttp.ClientResponseError as e:
