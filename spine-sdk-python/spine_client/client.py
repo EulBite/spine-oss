@@ -202,8 +202,8 @@ class SpineClient:
                 self._signing_key = SigningKey.generate()
                 logger.warning(
                     f"Auto-generated signing key: {self._signing_key.key_id}. "
-                    "For production, persist the key to maintain forensic continuity across restarts. "
-                    "See SpineClient docstring or docs/KEY_MANAGEMENT.md."
+                    "For production, persist the key to maintain forensic "
+                    "continuity across restarts. See docs/KEY_MANAGEMENT.md."
                 )
 
             wal_config = WALConfig(data_dir=self._wal_dir)
@@ -290,7 +290,8 @@ class SpineClient:
                         if response.status in self._TRANSIENT_STATUS_CODES:
                             last_error = error
                             if attempt < self.config.max_retries - 1:
-                                backoff = min(0.1 * (2 ** attempt), 2.0)  # 0.1s, 0.2s, 0.4s... max 2s
+                                # Exponential backoff: 0.1s, 0.2s, 0.4s max 2s
+                                backoff = min(0.1 * (2 ** attempt), 2.0)
                                 logger.warning(
                                     f"Transient error {response.status}, "
                                     f"retry {attempt + 1}/{self.config.max_retries} in {backoff}s"
@@ -305,7 +306,8 @@ class SpineClient:
                 if attempt < self.config.max_retries - 1:
                     backoff = min(0.1 * (2 ** attempt), 2.0)
                     logger.warning(
-                        f"Network error: {e}, retry {attempt + 1}/{self.config.max_retries} in {backoff}s"
+                        f"Network error: {e}, "
+                        f"retry {attempt + 1}/{self.config.max_retries} in {backoff}s"
                     )
                     await asyncio.sleep(backoff)
                     continue
@@ -404,13 +406,13 @@ class SpineClient:
         """
         try:
             loop = asyncio.get_running_loop()
-        except RuntimeError:
+        except RuntimeError as e:
             raise RuntimeError(
                 "log_async() must be called from within an async context. "
                 "No running event loop detected. Use 'await client.log(event)' "
                 "inside an async function, or 'asyncio.run(client.log(event))' "
                 "from sync code."
-            )
+            ) from e
 
         task = loop.create_task(self._log_async_impl(event))
         self._background_tasks.append(task)
@@ -536,8 +538,9 @@ class SpineClient:
 
                 # Mark as synced: attach receipt (server-provided or synthetic)
                 # Without this, records would be re-sent on every sync cycle
-                from .types import Receipt
                 from datetime import datetime, timezone
+
+                from .types import Receipt
 
                 if "receipt" in result:
                     receipt = Receipt(
