@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1] - 2026-01-25
+
+### Fixed
+
+- **AuditSidecar: Semaphore leak on cancellation** - Fixed permit leak when `_add_to_buffer()` was cancelled during `block` policy. Added `acquired/enqueued` flags with proper cleanup in `finally` block
+- **AuditSidecar: Double exponential backoff** - Removed redundant external backoff in `_sender_loop()`, keeping only internal retry backoff
+- **AuditSidecar: stop() race condition** - Buffer reads during flush now protected by `_buffer_lock`
+- **AuditSidecar: try_emit() infinite buffer growth** - Fixed `drop_oldest` policy to actually evict oldest events (was missing after removing `maxlen`)
+- **AuditSidecar: try_emit() + block policy** - Now returns `False` immediately instead of breaking semaphore accounting
+- **AuditSidecar: max_backoff_ms ignored** - Retry backoff now capped at `max_backoff_ms`
+- **AuditSidecar: enable_local_wal contradiction** - Set `enable_local_wal=False` to match "in-memory only" documentation
+
+### Added
+
+- **AuditSidecar: try_emit()** - Truly non-blocking synchronous emit for latency-critical paths
+- **AuditSidecar: overflow_policy validation** - Invalid policies now raise `ValueError` immediately
+- **AuditSidecar: Enhanced is_healthy** - Detects stale sends (>60s) and failed startup (>30s grace period)
+- **AuditSidecar: Client None guard** - `_sender_loop()` handles edge case where `_client` is None
+
+### Changed
+
+- **AuditSidecar documentation** - Clarified timing guarantees (best-effort), block policy caveats, thread safety notes
+
 ## [0.4.0] - 2026-01-24
 
 ### Security

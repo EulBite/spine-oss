@@ -9,20 +9,33 @@ blocking on Spine availability. Events are buffered locally and
 sent asynchronously.
 
 Features:
-- Fire-and-forget interface (never blocks caller)
-- Configurable buffer with overflow handling
-- Background sender with retry logic
+- Fire-and-forget interface (emit() has configurable timeout, try_emit() is sync)
+- Configurable buffer with overflow handling (drop_oldest, drop_newest, block)
+- Background sender with retry logic and exponential backoff
 - Metrics for monitoring buffer health
+
+IMPORTANT - Durability Warning:
+    The sidecar uses an IN-MEMORY buffer. Events are lost if the process
+    crashes before they are sent to Spine. For critical audit requirements:
+
+    1. Use the SpineClient directly with enable_local_wal=True for durability
+    2. Or implement application-level persistence before calling emit()
+    3. The "accepted" return value means "in RAM buffer", NOT "persisted"
+
+    Future versions may add a persistent buffer option.
 
 Usage:
     sidecar = AuditSidecar("http://spine:3000")
     await sidecar.start()
 
-    # This never blocks, even if Spine is down
+    # This returns quickly (max emit_timeout_ms), even if Spine is down
     await sidecar.emit(AuditEvent(
         event_type="scada.command",
         payload={"device": "valve_01", "action": "open"}
     ))
+
+    # Truly non-blocking (sync, no await)
+    sidecar.try_emit(event)
 
     # Graceful shutdown
     await sidecar.stop()
@@ -53,6 +66,8 @@ class SidecarConfig:
     batch_size: int = 100
     send_interval_ms: int = 100
     max_retries: int = 3
+    base_backoff_ms: int = 100  # Initial backoff for exponential retry
+    max_backoff_ms: int = 30000  # Maximum backoff (30 seconds)
 
     # Timeouts
     emit_timeout_ms: int = 50  # Max time to wait when emitting
@@ -94,6 +109,25 @@ class AuditSidecar:
     in the background. If the buffer fills up, the configured overflow
     policy determines behavior.
 
+    Overflow Policies:
+        - "drop_oldest": Evict oldest events when buffer is full (default)
+        - "drop_newest": Reject new events when buffer is full
+        - "block": Wait for buffer space (with optional timeout)
+
+    Block Policy Caveats:
+        The "block" policy uses a semaphore to enforce buffer bounds. Under
+        extreme contention (high event rate + slow/failing sends), semaphore
+        permit counts may drift slightly. For production systems requiring
+        strict bounded-buffer semantics, consider using asyncio.Queue directly
+        or the "drop_oldest" policy which has simpler semantics.
+
+    Timing Guarantees:
+        - emit_timeout_ms is "best effort", not hard real-time. Actual wall
+          time may exceed the timeout slightly due to asyncio scheduling,
+          lock contention, or cancellation handling.
+        - try_emit() is synchronous but not 100% atomic (TOCTOU possible
+          under concurrent access from multiple threads).
+
     Example:
         # Initialize
         sidecar = AuditSidecar(
@@ -112,6 +146,9 @@ class AuditSidecar:
         await sidecar.stop(flush=True)
     """
 
+    # Valid overflow policies
+    VALID_POLICIES = ("drop_oldest", "drop_newest", "block")
+
     def __init__(
         self,
         spine_url: str,
@@ -122,6 +159,13 @@ class AuditSidecar:
         emit_timeout_ms: int = 50,
         on_drop: Callable[[AuditEvent, str], None] | None = None,
     ):
+        # Validate overflow_policy early to fail fast
+        if overflow_policy not in self.VALID_POLICIES:
+            raise ValueError(
+                f"Invalid overflow_policy '{overflow_policy}'. "
+                f"Must be one of: {', '.join(self.VALID_POLICIES)}"
+            )
+
         self.config = SidecarConfig(
             buffer_size=buffer_size,
             overflow_policy=overflow_policy,
@@ -132,12 +176,13 @@ class AuditSidecar:
 
         self._spine_url = spine_url
         self._client: SpineClient | None = None
-        maxlen = buffer_size if overflow_policy == "drop_oldest" else None
-        self._buffer: deque = deque(maxlen=maxlen)
+        # No maxlen - we handle overflow manually for accurate drop tracking
+        self._buffer: deque = deque()
         self._metrics = SidecarMetrics()
         self._running = False
         self._sender_task: asyncio.Task | None = None
         self._on_drop = on_drop
+        self._start_time: float | None = None  # Track when sidecar started
 
         # Lock to protect buffer operations from race conditions
         self._buffer_lock = asyncio.Lock()
@@ -147,19 +192,26 @@ class AuditSidecar:
             asyncio.Semaphore(buffer_size) if overflow_policy == "block" else None
         )
 
+        # Event to signal sender loop for immediate flush
+        self._flush_event = asyncio.Event()
+
     async def start(self) -> None:
         """Start the sidecar background sender."""
         if self._running:
             return
 
+        # Sidecar is "best-effort / low-latency" - no local WAL.
+        # The in-memory buffer IS the durability trade-off for speed.
+        # Users needing durability should use SpineClient directly with enable_local_wal=True.
         self._client = SpineClient(
             self._spine_url,
             enable_circuit_breaker=True,
-            enable_local_wal=True,
+            enable_local_wal=False,
         )
         await self._client.__aenter__()
 
         self._running = True
+        self._start_time = time.time()
         self._sender_task = asyncio.create_task(self._sender_loop())
         logger.info(f"AuditSidecar started: buffer_size={self.config.buffer_size}")
 
@@ -173,11 +225,29 @@ class AuditSidecar:
         """
         self._running = False
 
-        if flush and self._buffer:
-            logger.info(f"Flushing {len(self._buffer)} buffered events...")
+        # Check buffer under lock to avoid race with sender loop
+        async with self._buffer_lock:
+            has_events = len(self._buffer) > 0
+            event_count = len(self._buffer)
+
+        if flush and has_events:
+            logger.info(f"Flushing {event_count} buffered events...")
+            # Signal sender loop for immediate drain
+            self._flush_event.set()
+
             start = time.monotonic()
-            while self._buffer and (time.monotonic() - start) < timeout:
-                await asyncio.sleep(0.1)
+            while (time.monotonic() - start) < timeout:
+                async with self._buffer_lock:
+                    if not self._buffer:
+                        break
+                self._flush_event.set()
+                await asyncio.sleep(0.05)
+
+            # Final check under lock
+            async with self._buffer_lock:
+                remaining = len(self._buffer)
+            if remaining > 0:
+                logger.warning(f"Flush timeout: {remaining} events still in buffer")
 
         if self._sender_task:
             self._sender_task.cancel()
@@ -205,8 +275,9 @@ class AuditSidecar:
             True if event was accepted, False if dropped
 
         Note:
-            With emit_timeout_ms=50, this call will return within 50ms
-            even under heavy load or buffer pressure.
+            Timing is best-effort: typically returns within emit_timeout_ms,
+            but may exceed slightly due to asyncio scheduling, lock contention,
+            or cancellation handling. Not a hard real-time guarantee.
         """
         if not self._running:
             logger.warning("Sidecar not running, event dropped")
@@ -230,68 +301,169 @@ class AuditSidecar:
                 self._on_drop(event, "timeout")
             return False
 
+    def try_emit(self, event: AuditEvent) -> bool:
+        """
+        Truly non-blocking emit (best-effort, no await).
+
+        This method returns immediately without any async waiting.
+        Use this when you absolutely cannot tolerate any latency,
+        even the 50ms timeout of emit().
+
+        Args:
+            event: AuditEvent to emit
+
+        Returns:
+            True if event was accepted into buffer, False if dropped
+
+        Note:
+            - Works with "drop_newest" and "drop_oldest" policies
+            - NOT COMPATIBLE with "block" policy (always returns False)
+            - Best-effort: len check + append is not atomic (TOCTOU possible)
+            - Metrics may have minor race conditions under high concurrency
+
+        Thread Safety:
+            While deque.append/popleft are thread-safe in CPython (GIL), the
+            metrics counters (events_received, events_dropped, etc.) are not
+            atomic. Under multi-threaded access, metric values may be slightly
+            inaccurate. For accurate metrics, use emit() from async context.
+        """
+        if not self._running:
+            self._metrics.events_dropped += 1
+            return False
+
+        # "block" policy is incompatible with sync try_emit
+        # (would need semaphore acquire which is async)
+        if self.config.overflow_policy == "block":
+            self._metrics.events_dropped += 1
+            if self._on_drop:
+                self._on_drop(event, "block_policy_incompatible")
+            return False
+
+        # For "drop_newest": reject new event if buffer full
+        if self.config.overflow_policy == "drop_newest":
+            if len(self._buffer) >= self.config.buffer_size:
+                self._metrics.events_dropped += 1
+                if self._on_drop:
+                    self._on_drop(event, "buffer_full")
+                return False
+
+        # For "drop_oldest": evict oldest if buffer full
+        # Note: TOCTOU possible, but worst case is slightly over capacity
+        if self.config.overflow_policy == "drop_oldest":
+            if len(self._buffer) >= self.config.buffer_size:
+                try:
+                    dropped = self._buffer.popleft()
+                    self._metrics.events_dropped += 1
+                    if self._on_drop:
+                        self._on_drop(dropped, "buffer_overflow")
+                except IndexError:
+                    pass  # Concurrent pop, buffer now has space
+
+        # Append event (deque.append is thread-safe in CPython)
+        self._buffer.append(event)
+        self._metrics.events_received += 1
+
+        # Update high watermark (best-effort, not atomic)
+        current_len = len(self._buffer)
+        if current_len > self._metrics.buffer_high_watermark:
+            self._metrics.buffer_high_watermark = current_len
+
+        return True
+
     async def _add_to_buffer(self, event: AuditEvent) -> bool:
         """Add event to buffer with overflow handling.
 
         For "block" policy, waits for buffer slot with optional timeout.
         If block_timeout_ms > 0 and timeout occurs, event is dropped.
 
+        IMPORTANT: Properly handles cancellation to avoid semaphore leaks.
+
         Returns:
             True if event was added to buffer, False if dropped
         """
-        # For "block" policy, acquire semaphore BEFORE taking lock to avoid deadlock
-        if self.config.overflow_policy == "block":
-            try:
-                if self.config.block_timeout_ms > 0:
-                    await asyncio.wait_for(
-                        self._buffer_semaphore.acquire(),
-                        timeout=self.config.block_timeout_ms / 1000
-                    )
-                else:
-                    await self._buffer_semaphore.acquire()
-            except asyncio.TimeoutError:
-                self._metrics.events_dropped += 1
-                logger.warning("Block timeout waiting for buffer slot, event dropped")
-                if self._on_drop:
-                    self._on_drop(event, "block_timeout")
-                return False
+        acquired = False
+        enqueued = False
 
-        async with self._buffer_lock:
-            if self.config.overflow_policy == "drop_newest":
-                if len(self._buffer) >= self.config.buffer_size:
+        try:
+            # For "block" policy, acquire semaphore BEFORE taking lock
+            if self.config.overflow_policy == "block":
+                try:
+                    if self.config.block_timeout_ms > 0:
+                        await asyncio.wait_for(
+                            self._buffer_semaphore.acquire(),
+                            timeout=self.config.block_timeout_ms / 1000
+                        )
+                    else:
+                        await self._buffer_semaphore.acquire()
+                    acquired = True
+                except asyncio.TimeoutError:
                     self._metrics.events_dropped += 1
+                    logger.warning("Block timeout waiting for buffer slot")
                     if self._on_drop:
-                        self._on_drop(event, "buffer_full")
+                        self._on_drop(event, "block_timeout")
                     return False
 
-            # drop_oldest is handled by deque maxlen, but we track the drop
-            is_drop_oldest = self.config.overflow_policy == "drop_oldest"
-            if is_drop_oldest and len(self._buffer) >= self.config.buffer_size:
-                dropped = self._buffer.popleft()
-                self._metrics.events_dropped += 1
-                if self._on_drop:
-                    self._on_drop(dropped, "buffer_overflow")
+            async with self._buffer_lock:
+                if self.config.overflow_policy == "drop_newest":
+                    if len(self._buffer) >= self.config.buffer_size:
+                        self._metrics.events_dropped += 1
+                        if self._on_drop:
+                            self._on_drop(event, "buffer_full")
+                        return False
 
-            self._buffer.append(event)
+                # drop_oldest: manually remove oldest to track metrics
+                if self.config.overflow_policy == "drop_oldest":
+                    if len(self._buffer) >= self.config.buffer_size:
+                        dropped = self._buffer.popleft()
+                        self._metrics.events_dropped += 1
+                        if self._on_drop:
+                            self._on_drop(dropped, "buffer_overflow")
 
-            # Track high watermark
-            if len(self._buffer) > self._metrics.buffer_high_watermark:
-                self._metrics.buffer_high_watermark = len(self._buffer)
+                self._buffer.append(event)
+                enqueued = True
 
-            return True
+                # Track high watermark
+                if len(self._buffer) > self._metrics.buffer_high_watermark:
+                    self._metrics.buffer_high_watermark = len(self._buffer)
+
+                return True
+
+        except asyncio.CancelledError:
+            # Propagate cancellation but ensure cleanup happens in finally
+            raise
+        finally:
+            # Release semaphore if acquired but event was NOT enqueued
+            # This prevents permit leak on cancellation or early return
+            if acquired and not enqueued and self._buffer_semaphore:
+                self._buffer_semaphore.release()
 
     async def _sender_loop(self) -> None:
         """Background loop that sends buffered events to Spine."""
         logger.info("Sender loop started")
 
         while self._running or self._buffer:
+            # Guard against client not initialized (shouldn't happen in normal flow,
+            # but protects against edge cases like start() failing mid-way)
+            if self._client is None:
+                logger.warning("Client not initialized, sleeping...")
+                await asyncio.sleep(1.0)
+                continue
             try:
+                # Wait for flush signal or regular interval
+                try:
+                    await asyncio.wait_for(
+                        self._flush_event.wait(),
+                        timeout=self.config.send_interval_ms / 1000
+                    )
+                    self._flush_event.clear()
+                except asyncio.TimeoutError:
+                    pass  # Normal interval elapsed
+
                 # Check if buffer is empty (under lock)
                 async with self._buffer_lock:
                     buffer_empty = len(self._buffer) == 0
 
                 if buffer_empty:
-                    await asyncio.sleep(self.config.send_interval_ms / 1000)
                     continue
 
                 # Collect batch under lock
@@ -306,57 +478,10 @@ class AuditSidecar:
                 if not batch:
                     continue
 
-                # Send batch
-                send_success = False
-                try:
-                    await self._client.log_batch(batch)
-                    self._metrics.events_sent += len(batch)
-                    self._metrics.last_send_time = time.time()
-                    logger.debug(f"Sent batch of {len(batch)} events")
-                    send_success = True
-
-                except Exception as e:
-                    # On failure, put events back in buffer (at front)
-                    self._metrics.events_failed += len(batch)
-                    self._metrics.last_error = str(e)
-                    logger.warning(f"Batch send failed: {e}")
-
-                    # Re-queue events under lock (they'll go to local WAL via client)
-                    # Track how many we successfully re-queued and which were lost
-                    requeued = 0
-                    lost_events = []
-                    async with self._buffer_lock:
-                        for event in reversed(batch):
-                            if len(self._buffer) < self.config.buffer_size:
-                                self._buffer.appendleft(event)
-                                requeued += 1
-                            else:
-                                # Event couldn't be re-queued, track it
-                                lost_events.append(event)
-
-                    # Handle lost events
-                    events_lost = len(lost_events)
-                    if events_lost > 0:
-                        # Track lost events in metrics
-                        self._metrics.events_dropped += events_lost
-                        # Call on_drop callback for each lost event
-                        if self._on_drop:
-                            for event in lost_events:
-                                self._on_drop(event, "requeue_buffer_full")
-                        if self._buffer_semaphore:
-                            for _ in range(events_lost):
-                                self._buffer_semaphore.release()
-                        logger.warning(f"{events_lost} events lost (buffer full on re-queue)")
-
-                    # Back off on error
-                    await asyncio.sleep(1.0)
-
-                finally:
-                    # Release semaphores for successfully sent items
-                    # (they're no longer in buffer, so their slots are free)
-                    if self._buffer_semaphore and send_success:
-                        for _ in range(semaphores_to_release):
-                            self._buffer_semaphore.release()
+                # Send batch with retries (backoff is handled inside)
+                await self._send_batch_with_retry(batch, semaphores_to_release)
+                # No external backoff - _send_batch_with_retry already does
+                # exponential backoff between attempts
 
             except asyncio.CancelledError:
                 break
@@ -366,6 +491,70 @@ class AuditSidecar:
 
         logger.info("Sender loop stopped")
 
+    async def _send_batch_with_retry(
+        self, batch: list, semaphores_to_release: int
+    ) -> bool:
+        """Send batch with retry logic. Returns True if successful."""
+        last_error = None
+
+        for attempt in range(self.config.max_retries):
+            try:
+                await self._client.log_batch(batch)
+                self._metrics.events_sent += len(batch)
+                self._metrics.last_send_time = time.time()
+                logger.debug(f"Sent batch of {len(batch)} events")
+
+                # Release semaphores for successfully sent items
+                if self._buffer_semaphore:
+                    for _ in range(semaphores_to_release):
+                        self._buffer_semaphore.release()
+
+                return True
+
+            except Exception as e:
+                last_error = e
+                self._metrics.last_error = str(e)
+
+                if attempt < self.config.max_retries - 1:
+                    # Exponential backoff between retries, capped at max_backoff_ms
+                    retry_backoff = min(
+                        self.config.base_backoff_ms * (2 ** attempt),
+                        self.config.max_backoff_ms
+                    )
+                    logger.warning(
+                        f"Batch send failed (attempt {attempt + 1}/"
+                        f"{self.config.max_retries}): {e}, retrying in {retry_backoff}ms"
+                    )
+                    await asyncio.sleep(retry_backoff / 1000)
+
+        # All retries exhausted - re-queue events
+        logger.warning(f"Batch send failed after {self.config.max_retries} attempts: {last_error}")
+        self._metrics.events_failed += len(batch)
+
+        # Re-queue events under lock
+        requeued = 0
+        lost_events = []
+        async with self._buffer_lock:
+            for event in reversed(batch):
+                if len(self._buffer) < self.config.buffer_size:
+                    self._buffer.appendleft(event)
+                    requeued += 1
+                else:
+                    lost_events.append(event)
+
+        # Handle lost events
+        if lost_events:
+            self._metrics.events_dropped += len(lost_events)
+            if self._on_drop:
+                for event in lost_events:
+                    self._on_drop(event, "requeue_buffer_full")
+            if self._buffer_semaphore:
+                for _ in range(len(lost_events)):
+                    self._buffer_semaphore.release()
+            logger.warning(f"{len(lost_events)} events lost (buffer full on re-queue)")
+
+        return False
+
     @property
     def buffer_size(self) -> int:
         """Current number of events in buffer."""
@@ -373,10 +562,40 @@ class AuditSidecar:
 
     @property
     def is_healthy(self) -> bool:
-        """True if sidecar is running and buffer is not critically full."""
+        """
+        True if sidecar is running and appears healthy.
+
+        Health checks:
+        - Sidecar is running
+        - Buffer is not critically full (< 90% capacity)
+        - If buffer has events: recent successful send OR recently started
+
+        Note: This is a best-effort health signal, not a guarantee.
+        """
         if not self._running:
             return False
-        return len(self._buffer) < self.config.buffer_size * 0.9
+
+        # Buffer critically full
+        if len(self._buffer) >= self.config.buffer_size * 0.9:
+            return False
+
+        # If buffer has events, check send health
+        if len(self._buffer) > 0:
+            now = time.time()
+
+            if self._metrics.last_send_time:
+                # Have sent before - check if recent
+                time_since_send = now - self._metrics.last_send_time
+                if time_since_send > 60.0:
+                    return False
+            elif self._start_time:
+                # Never sent successfully - check if we've been trying long enough
+                # Give 30s grace period after start before marking unhealthy
+                time_since_start = now - self._start_time
+                if time_since_start > 30.0:
+                    return False
+
+        return True
 
     def get_metrics(self) -> dict:
         """Get sidecar metrics."""
