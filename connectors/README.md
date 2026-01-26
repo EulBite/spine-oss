@@ -29,11 +29,11 @@ npx spine-vanta --upload attestation.json --api-token $VANTA_API_TOKEN
 ## How It Works
 
 ```
-┌─────────────┐     ┌──────────────┐     ┌─────────────┐
-│  Your App   │────▶│  Spine WAL   │────▶│  Connector  │────▶ Compliance Platform
-│  (Events)   │     │  (Tamper-    │     │  (Export +  │     (Vanta, etc.)
-│             │     │   proof)     │     │   Upload)   │
-└─────────────┘     └──────────────┘     └─────────────┘
+┌─────────────┐     ┌──────────────┐     ┌─────────────┐     ┌────────────┐
+│  Your App   │────▶│  Spine WAL   │────▶│  Connector  │────▶│ Compliance │
+│  (Events)   │     │  (Tamper-    │     │  (Export +  │     │  Platform  │
+│             │     │   proof)     │     │   Upload)   │     │  (Vanta)   │
+└─────────────┘     └──────────────┘     └─────────────┘     └────────────┘
 ```
 
 1. **Your app** logs audit events to Spine WAL (hash-chained, signed)
