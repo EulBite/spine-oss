@@ -1,0 +1,26 @@
+{
+  "name": "spine-vanta-connector",
+  "version": "0.1.0",
+  "description": "Spine connector for Vanta - upload cryptographic attestations as evidence",
+  "type": "module",
+  "bin": {
+    "spine-vanta": "./dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/cli.js",
+    "dry-run": "node dist/cli.js --dry-run",
+    "test": "node --test dist/test/*.test.js"
+  },
+  "dependencies": {
+    "spine-sdk-node": "file:../../spine-node"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "typescript": "^5.3.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "license": "Apache-2.0"
+}

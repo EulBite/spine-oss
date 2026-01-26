@@ -1,0 +1,9 @@
+# Screenshot placeholders
+
+To capture actual screenshots:
+
+1. 01-dry-run.png - Terminal showing `npx spine-vanta --dry-run` output
+2. 02-signed-attestation.png - JSON output with signature block
+3. 03-vanta-upload.png - Terminal showing upload success
+4. 04-vanta-dashboard.png - Vanta UI showing the uploaded document
+5. 05-verification-details.png - Expanded view of attestation in Vanta
