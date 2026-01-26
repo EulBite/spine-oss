@@ -1,7 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
+import { webcrypto } from 'crypto';
 import { createHash } from 'blake3';
 import * as ed from '@noble/ed25519';
+
+// Polyfill for Node 18 (crypto.getRandomValues not global)
+// @ts-ignore
+if (!globalThis.crypto) globalThis.crypto = webcrypto;
 import { canonicalJson } from './canonical.js';
 
 export function blake3Hash(data: Buffer): string {
